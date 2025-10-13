@@ -42,13 +42,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <script src='https://unpkg.com/wavesurfer.js@7'></script>
   <script type='module'>
+    console.log('[Module] Starting ES module...');
+    
     // Import du plugin Record depuis le module ES
     import RecordPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/record.esm.js';
+    console.log('[Module] RecordPlugin imported');
+    
     let wavesurfer;
     let record;
 
     const micSelect = document.querySelector('#mic-select');
     const statusLabel = document.querySelector('#status');
+    
+    console.log('[Module] DOM elements selected');
 
     const showError = (msg) => {
       const errorDiv = document.querySelector('#error');
@@ -106,14 +112,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       });
     };
 
-    const showError = (msg) => {
-      const errorDiv = document.querySelector('#error');
-      if (errorDiv) {
-        errorDiv.textContent = msg;
-        console.error(msg);
-      }
-    };
-
     const ensureDevices = async () => {
       try {
         const devices = await RecordPlugin.getAvailableAudioDevices();
@@ -141,11 +139,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         showError('Record plugin non initialisé');
         return;
       }
-      if (record.isRecording() || record.isPaused()) {
-        console.log('Already recording or paused');
+      if (record.isRecording()) {
+        console.log('Already recording');
         return;
       }
-      recButton.disabled = true;
       try {
         const deviceId = micSelect.value || undefined;
         console.log('Starting recording with deviceId:', deviceId);
@@ -153,15 +150,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         console.log('Recording started successfully');
       } catch (err) {
         showError('Erreur démarrage: ' + err.message);
-        recButton.textContent = 'Record';
-        pauseButton.style.display = 'none';
-      } finally {
-        recButton.disabled = false;
       }
     };
 
     const stopRecording = () => {
-      if (record && (record.isRecording() || record.isPaused())) {
+      if (record && record.isRecording()) {
         try {
           record.stopRecording();
         } catch (e) {
@@ -210,7 +203,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       start: startRecording,
       stop: stopRecording,
       toggle: toggleRecording,
-      pause: togglePause,
       refreshDevices: ensureDevices,
     };
 
@@ -231,19 +223,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 class Visualizer(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Micro Visualizer")
-        self.resize(720, 160)
+        self.setWindowTitle("Micro Monitor")
+        self.resize(900, 180)
 
         self._view = QWebEngineView()
         self._view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         settings = self._view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        self._view.setHtml(HTML_TEMPLATE, baseUrl=QtCore.QUrl("https://visualizer.local/"))
-        self.setCentralWidget(self._view)
-
-        page = self._view.page()
+        
+        # Créer une page custom pour capturer les logs JS
+        class DebugPage(QWebEnginePage):
+            def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+                print(f"[JS] {message} (line {lineNumber})")
+        
+        page = DebugPage(self._view)
+        self._view.setPage(page)
         page.featurePermissionRequested.connect(self._on_feature_permission_requested)
         self._view.loadFinished.connect(self._on_load_finished)
+        
+        self._view.setHtml(HTML_TEMPLATE, baseUrl=QtCore.QUrl("https://visualizer.local/"))
+        self.setCentralWidget(self._view)
 
         self._always_on_top = True
         self._paused = False
@@ -251,17 +250,20 @@ class Visualizer(QtWidgets.QMainWindow):
 
     def _on_feature_permission_requested(self, origin: QtCore.QUrl, feature: QWebEnginePage.Feature) -> None:
         # Accorder permission pour capture audio micro
+        print(f"[Permission] Feature requested: {feature}")
         # Note: setFeaturePermission est deprecated, mais nécessaire pour PySide6 < 6.8
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             if feature == QWebEnginePage.Feature.MediaAudioCapture:
+                print("[Permission] Granting MediaAudioCapture permission")
                 self._view.page().setFeaturePermission(
                     origin,
                     feature,
                     QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
                 )
             else:
+                print(f"[Permission] Denying feature: {feature}")
                 self._view.page().setFeaturePermission(
                     origin,
                     feature,
@@ -269,7 +271,9 @@ class Visualizer(QtWidgets.QMainWindow):
                 )
 
     def _on_load_finished(self, ok: bool) -> None:
+        print(f"[Load] Page loaded: {ok}")
         if ok and not self._paused:
+            print("[Load] Starting visualizer bridge...")
             self._invoke_js("window.visualizerBridge && window.visualizerBridge.start();")
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
@@ -282,8 +286,6 @@ class Visualizer(QtWidgets.QMainWindow):
         elif key == QtCore.Qt.Key.Key_T:
             self._always_on_top = not self._always_on_top
             self._apply_window_flags()
-        elif key == QtCore.Qt.Key.Key_P:
-            self._invoke_js("window.visualizerBridge && window.visualizerBridge.pause();")
         else:
             super().keyPressEvent(event)
 
@@ -292,7 +294,7 @@ class Visualizer(QtWidgets.QMainWindow):
             self._invoke_js("window.visualizerBridge && window.visualizerBridge.stop();")
             # Attendre un peu pour que le JS s'exécute
             QtCore.QTimer.singleShot(100, lambda: None)
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             print(f"Error during close: {e}")
         super().closeEvent(event)
 
