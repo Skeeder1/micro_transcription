@@ -1,8 +1,8 @@
-"""Microphone visualizer using WaveSurfer.js embedded in a Qt WebEngine window.
+"""Microphone visualizer embedding a Wavesurfer.js recorder UI via Qt WebEngine.
 
 Install dependencies:
     pip install --upgrade pip
-    pip install PySide6 sounddevice numpy
+    pip install PySide6 pyqtgraph sounddevice numpy
 """
 
 from __future__ import annotations
@@ -13,272 +13,215 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
-HTML_TEMPLATE = r"""<!doctype html>
-<html lang=\"fr\">
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang='fr'>
 <head>
-<meta charset=\"utf-8\" />
+<meta charset='utf-8'>
 <title>Visualiseur micro</title>
 <style>
-  body{background:#222;margin:0;display:flex;height:100vh;align-items:center;justify-content:center;font-family:sans-serif;color:#eee}
-  .panel{width:900px;height:160px;background:#2b2b2b;border-radius:16px;padding:20px 28px;box-shadow:0 10px 30px rgba(0,0,0,.35);position:relative;box-sizing:border-box}
-  #mic{height:96px;border-radius:8px;border:1px solid #3d3d3d;background:#1d1d1d;margin-top:16px}
-  .panel::after{content:\"\";display:block;height:0;border-top:2px dotted #555;position:absolute;left:28px;right:28px;top:104px}
-  .toolbar{display:flex;align-items:center;gap:12px;font-size:13px}
-  button{background:#3a3a3a;color:#ddd;border:0;padding:6px 12px;border-radius:6px;cursor:pointer;min-width:72px}
-  button:disabled{opacity:0.5;cursor:default}
-  select{background:#3a3a3a;color:#ddd;border:0;border-radius:6px;padding:6px 10px}
-  label{display:flex;align-items:center;gap:6px}
-  #progress{margin-left:auto;font-variant-numeric:tabular-nums}
-  #recordings{margin-top:12px;display:flex;flex-direction:column;gap:8px}
-  #recordings button{min-width:64px}
-  #recordings a{color:#9fc9ff;text-decoration:none;font-size:12px;margin-left:8px}
+  :root { color-scheme: dark; }
+  body { background:#222; margin:0; display:flex; height:100vh; align-items:center; justify-content:center; font-family:Arial, sans-serif; }
+  .panel { width:900px; background:#2b2b2b; border-radius:16px; padding:24px 28px 20px; box-shadow:0 10px 30px rgba(0,0,0,.35); position:relative; color:#ddd; }
+  #mic { height:120px; border-radius:8px; overflow:hidden; background:#1a1a1a; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  select { background:#3a3a3a; color:#f2f2f2; border:0; padding:6px 10px; border-radius:6px; }
+  #status { margin:4px 0 0; font-size:12px; color:#999; }
+  #error { color:#ff6b6b; margin-top:8px; font-size:13px; }
 </style>
 </head>
 <body>
-  <div class=\"panel\">
-    <div class=\"toolbar\">
-      <button id=\"record\">Record</button>
-      <button id=\"pause\" style=\"display:none;\">Pause</button>
-      <select id=\"mic-select\">
-        <option value=\"\" hidden>Micro par défaut</option>
-      </select>
-      <label><input type=\"checkbox\" id=\"scrollingWaveform\" />Scrolling</label>
-      <label><input type=\"checkbox\" id=\"continuousWaveform\" checked />Continu</label>
-      <span id=\"progress\">00:00</span>
+  <div class='panel'>
+    <div class='toolbar'>
+      <select id='mic-select'><option value='' hidden>Sélection micro</option></select>
+      <span id='status'>Monitoring...</span>
     </div>
-    <div id=\"mic\"></div>
-    <div id=\"recordings\"></div>
+    <div id='mic' style='margin-top:12px;'></div>
+    <div id='error'></div>
   </div>
 
-  <script type=\"module\">
-    import WaveSurfer from 'https://unpkg.com/wavesurfer.js@7/dist/wavesurfer.esm.js';
+  <script src='https://unpkg.com/wavesurfer.js@7'></script>
+  <script type='module'>
+    // Import du plugin Record depuis le module ES
     import RecordPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/record.esm.js';
-
-    const micContainer = document.querySelector('#mic');
-    const recordingsContainer = document.querySelector('#recordings');
-    const progress = document.querySelector('#progress');
-    const pauseButton = document.querySelector('#pause');
-    const recButton = document.querySelector('#record');
-    const micSelect = document.querySelector('#mic-select');
-    const scrollingCheckbox = document.querySelector('#scrollingWaveform');
-    const continuousCheckbox = document.querySelector('#continuousWaveform');
-
     let wavesurfer;
     let record;
-    let scrollingWaveform = scrollingCheckbox.checked;
-    let continuousWaveform = continuousCheckbox.checked;
 
-    const formatTime = (timeMs) => {
-      const minutes = Math.floor((timeMs % 3600000) / 60000);
-      const seconds = Math.floor((timeMs % 60000) / 1000);
-      return [minutes, seconds].map((v) => (v < 10 ? '0' + v : String(v))).join(':');
+    const micSelect = document.querySelector('#mic-select');
+    const statusLabel = document.querySelector('#status');
+
+    const showError = (msg) => {
+      const errorDiv = document.querySelector('#error');
+      if (errorDiv) {
+        errorDiv.textContent = msg;
+        console.error(msg);
+      }
+      if (statusLabel) {
+        statusLabel.textContent = 'Error: ' + msg;
+        statusLabel.style.color = '#ff6b6b';
+      }
     };
 
-    const updateProgress = (time) => {
-      progress.textContent = formatTime(time);
-    };
-
-    const resetUi = () => {
-      pauseButton.style.display = 'none';
-      pauseButton.textContent = 'Pause';
-      recButton.textContent = 'Record';
-      recButton.disabled = false;
-      updateProgress(0);
+    const setStatus = (msg) => {
+      if (statusLabel) {
+        statusLabel.textContent = msg;
+        statusLabel.style.color = '#6bff6b';
+      }
     };
 
     const createWaveSurfer = () => {
+      if (record && (record.isRecording() || record.isPaused())) {
+        record.stopRecording();
+      }
       if (wavesurfer) {
-        wavesurfer.destroy();
+        try {
+          wavesurfer.destroy();
+        } catch (e) {
+          console.warn('Error destroying wavesurfer:', e);
+        }
       }
 
       wavesurfer = WaveSurfer.create({
-        container: micContainer,
-        waveColor: 'rgb(200, 0, 200)',
-        progressColor: 'rgb(100, 0, 100)',
-        interact: false,
+        container: '#mic',
+        waveColor: 'rgb(100, 200, 255)',
+        progressColor: 'rgb(50, 150, 255)',
+        cursorWidth: 0,
+        height: 120,
       });
 
-      record = wavesurfer.registerPlugin(
-        RecordPlugin.create({
-          renderRecordedAudio: false,
-          scrollingWaveform,
-          continuousWaveform,
-          continuousWaveformDuration: 30,
-        }),
-      );
+      record = wavesurfer.registerPlugin(RecordPlugin.create({
+        renderRecordedAudio: false,
+        scrollingWaveform: true,
+        continuousWaveform: false,
+      }));
 
-      record.on('record-end', (blob) => {
-        resetUi();
-        const entry = document.createElement('div');
-        entry.style.display = 'flex';
-        entry.style.alignItems = 'center';
-        entry.style.gap = '8px';
-
-        const waveHolder = document.createElement('div');
-        waveHolder.style.width = '280px';
-        waveHolder.style.height = '48px';
-        waveHolder.style.flexShrink = '0';
-        entry.appendChild(waveHolder);
-
-        const recordedUrl = URL.createObjectURL(blob);
-
-        const preview = WaveSurfer.create({
-          container: waveHolder,
-          waveColor: 'rgb(200, 100, 0)',
-          progressColor: 'rgb(100, 50, 0)',
-          height: 48,
-          url: recordedUrl,
-        });
-
-        const playButton = document.createElement('button');
-        playButton.textContent = 'Play';
-        playButton.onclick = () => preview.playPause();
-        preview.on('pause', () => (playButton.textContent = 'Play'));
-        preview.on('play', () => (playButton.textContent = 'Pause'));
-        entry.appendChild(playButton);
-
-        const link = document.createElement('a');
-        const extension = blob.type.split(';')[0].split('/')[1] || 'webm';
-        Object.assign(link, {
-          href: recordedUrl,
-          download: 'recording.' + extension,
-          textContent: 'Download',
-        });
-        entry.appendChild(link);
-
-        recordingsContainer.appendChild(entry);
+      record.on('record-start', () => {
+        console.log('Recording started');
+        setStatus('Monitoring active');
       });
 
-      record.on('record-progress', (time) => {
-        updateProgress(time);
+      record.on('record-stop', () => {
+        console.log('Recording stopped');
+        setStatus('Monitoring stopped');
       });
-
-      resetUi();
     };
 
-    pauseButton.onclick = () => {
+    const showError = (msg) => {
+      const errorDiv = document.querySelector('#error');
+      if (errorDiv) {
+        errorDiv.textContent = msg;
+        console.error(msg);
+      }
+    };
+
+    const ensureDevices = async () => {
+      try {
+        const devices = await RecordPlugin.getAvailableAudioDevices();
+        micSelect.innerHTML = '<option value="" hidden>Micro</option>';
+        devices.forEach((device, index) => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.text = device.label || device.deviceId || ('Micro ' + (index + 1));
+          micSelect.appendChild(option);
+        });
+        if (devices.length && !micSelect.value) {
+          micSelect.value = devices[0].deviceId;
+        }
+        console.log('Found ' + devices.length + ' audio devices');
+        setStatus('Ready - ' + devices.length + ' device(s)');
+        return devices.length > 0;
+      } catch (err) {
+        showError('Erreur accès périphériques: ' + err.message);
+        return false;
+      }
+    };
+
+    const startRecording = async () => {
       if (!record) {
+        showError('Record plugin non initialisé');
         return;
       }
-      if (record.isPaused()) {
-        record.resumeRecording();
-        pauseButton.textContent = 'Pause';
-      } else {
-        record.pauseRecording();
-        pauseButton.textContent = 'Resume';
-      }
-    };
-
-    micSelect.onchange = () => {
-      // no-op: device applied when recording starts
-    };
-
-    recButton.onclick = () => {
-      if (!record) {
-        return;
-      }
-
       if (record.isRecording() || record.isPaused()) {
-        record.stopRecording();
-        resetUi();
+        console.log('Already recording or paused');
         return;
       }
-
       recButton.disabled = true;
-      const deviceId = micSelect.value || undefined;
-      const options = deviceId ? { deviceId } : undefined;
-      record
-        .startRecording(options)
-        .then(() => {
-          recButton.textContent = 'Stop';
-          recButton.disabled = false;
-          pauseButton.style.display = 'inline';
-          pauseButton.textContent = 'Pause';
-          updateProgress(0);
-        })
-        .catch(() => {
-          resetUi();
-        });
+      try {
+        const deviceId = micSelect.value || undefined;
+        console.log('Starting recording with deviceId:', deviceId);
+        await record.startRecording({ deviceId });
+        console.log('Recording started successfully');
+      } catch (err) {
+        showError('Erreur démarrage: ' + err.message);
+        recButton.textContent = 'Record';
+        pauseButton.style.display = 'none';
+      } finally {
+        recButton.disabled = false;
+      }
     };
 
-    scrollingCheckbox.onchange = (event) => {
-      const next = event.target.checked;
-      scrollingWaveform = next;
-      if (next && continuousWaveform) {
-        continuousWaveform = false;
-        continuousCheckbox.checked = false;
-      }
-      createWaveSurfer();
-    };
-
-    continuousCheckbox.onchange = (event) => {
-      const next = event.target.checked;
-      continuousWaveform = next;
-      if (next && scrollingWaveform) {
-        scrollingWaveform = false;
-        scrollingCheckbox.checked = false;
-      }
-      createWaveSurfer();
-    };
-
-    RecordPlugin.getAvailableAudioDevices().then((devices) => {
-      devices.forEach((device) => {
-        const option = document.createElement('option');
-        option.value = device.deviceId;
-        option.text = device.label || device.deviceId;
-        micSelect.appendChild(option);
-      });
-      if (!micSelect.value && devices.length > 0) {
-        micSelect.value = devices[0].deviceId;
-      }
-    });
-
-    createWaveSurfer();
-
-    window.visualizerControl = {
-      start: () => {
-        if (!record) {
-          return;
-        }
-        if (record.isRecording()) {
-          return;
-        }
-        recButton.click();
-      },
-      stop: () => {
-        if (!record) {
-          return;
-        }
-        if (record.isRecording() || record.isPaused()) {
+    const stopRecording = () => {
+      if (record && (record.isRecording() || record.isPaused())) {
+        try {
           record.stopRecording();
-          resetUi();
+        } catch (e) {
+          console.warn('Error stopping recording:', e);
         }
-      },
-      toggle: () => {
-        if (!record) {
-          return;
-        }
-        if (record.isRecording() || record.isPaused()) {
-          recButton.click();
-        } else {
-          recButton.click();
-        }
-      },
-      togglePause: () => {
-        if (!record) {
-          return;
-        }
-        if (record.isPaused()) {
-          record.resumeRecording();
-          pauseButton.textContent = 'Pause';
-        } else if (record.isRecording()) {
-          record.pauseRecording();
-          pauseButton.textContent = 'Resume';
-        } else {
-          recButton.click();
-        }
-      },
+      }
     };
+
+    const toggleRecording = () => {
+      if (!record) {
+        return;
+      }
+      if (record.isRecording()) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
+    };
+
+    const initialize = async () => {
+      try {
+        console.log('Initializing visualizer...');
+        if (typeof WaveSurfer === 'undefined') {
+          showError('WaveSurfer non chargé');
+          return;
+        }
+        if (typeof RecordPlugin === 'undefined') {
+          showError('RecordPlugin non chargé');
+          return;
+        }
+        console.log('WaveSurfer and RecordPlugin loaded');
+        createWaveSurfer();
+        const hasDevice = await ensureDevices();
+        if (hasDevice) {
+          console.log('Starting auto-record...');
+          await startRecording();
+        } else {
+          showError('Aucun micro détecté');
+        }
+      } catch (err) {
+        showError('Init error: ' + err.message);
+      }
+    };
+
+    window.visualizerBridge = {
+      start: startRecording,
+      stop: stopRecording,
+      toggle: toggleRecording,
+      pause: togglePause,
+      refreshDevices: ensureDevices,
+    };
+
+    // Attendre que WaveSurfer soit chargé
+    if (typeof WaveSurfer !== 'undefined') {
+      initialize();
+    } else {
+      window.addEventListener('load', () => {
+        setTimeout(initialize, 500);
+      });
+    }
   </script>
 </body>
 </html>
@@ -289,56 +232,68 @@ class Visualizer(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Micro Visualizer")
-        self.resize(900, 200)
+        self.resize(720, 160)
 
         self._view = QWebEngineView()
         self._view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
         settings = self._view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        self._view.setHtml(HTML_TEMPLATE, baseUrl=QtCore.QUrl("https://visualizer.local/"))
         self.setCentralWidget(self._view)
 
         page = self._view.page()
         page.featurePermissionRequested.connect(self._on_feature_permission_requested)
         self._view.loadFinished.connect(self._on_load_finished)
-        self._view.setHtml(HTML_TEMPLATE, baseUrl=QtCore.QUrl("https://visualizer.local/"))
 
         self._always_on_top = True
+        self._paused = False
         self._apply_window_flags()
 
-    def _on_feature_permission_requested(
-        self, security_origin: QtCore.QUrl, feature: QWebEnginePage.Feature
-    ) -> None:
-        if feature == QWebEnginePage.Feature.MediaAudioCapture:
-            self._view.page().setFeaturePermission(
-                security_origin,
-                feature,
-                QWebEnginePage.PermissionPolicy.PermissionGrantedByUser,
-            )
-        else:
-            self._view.page().setFeaturePermission(
-                security_origin,
-                feature,
-                QWebEnginePage.PermissionPolicy.PermissionDeniedByUser,
-            )
+    def _on_feature_permission_requested(self, origin: QtCore.QUrl, feature: QWebEnginePage.Feature) -> None:
+        # Accorder permission pour capture audio micro
+        # Note: setFeaturePermission est deprecated, mais nécessaire pour PySide6 < 6.8
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            if feature == QWebEnginePage.Feature.MediaAudioCapture:
+                self._view.page().setFeaturePermission(
+                    origin,
+                    feature,
+                    QWebEnginePage.PermissionPolicy.PermissionGrantedByUser
+                )
+            else:
+                self._view.page().setFeaturePermission(
+                    origin,
+                    feature,
+                    QWebEnginePage.PermissionPolicy.PermissionDeniedByUser
+                )
 
     def _on_load_finished(self, ok: bool) -> None:
-        if ok:
-            self._invoke_js("window.visualizerControl && window.visualizerControl.start();")
+        if ok and not self._paused:
+            self._invoke_js("window.visualizerBridge && window.visualizerBridge.start();")
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         key = event.key()
         if key == QtCore.Qt.Key.Key_Escape:
             self.close()
         elif key == QtCore.Qt.Key.Key_Space:
-            self._invoke_js("window.visualizerControl && window.visualizerControl.togglePause();")
+            self._paused = not self._paused
+            self._invoke_js("window.visualizerBridge && window.visualizerBridge.toggle();")
         elif key == QtCore.Qt.Key.Key_T:
             self._always_on_top = not self._always_on_top
             self._apply_window_flags()
+        elif key == QtCore.Qt.Key.Key_P:
+            self._invoke_js("window.visualizerBridge && window.visualizerBridge.pause();")
         else:
             super().keyPressEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        self._invoke_js("window.visualizerControl && window.visualizerControl.stop();")
+        try:
+            self._invoke_js("window.visualizerBridge && window.visualizerBridge.stop();")
+            # Attendre un peu pour que le JS s'exécute
+            QtCore.QTimer.singleShot(100, lambda: None)
+        except Exception as e:
+            print(f"Error during close: {e}")
         super().closeEvent(event)
 
     def _invoke_js(self, script: str) -> None:

@@ -1,10 +1,38 @@
+import os
 import queue
+import subprocess
+import sys
 import time
 import sounddevice as sd
 import numpy as np
 import keyboard
 import pyperclip
 from faster_whisper import WhisperModel
+
+_visualizer_proc = None
+
+
+def start_visualizer():
+    global _visualizer_proc
+    if _visualizer_proc and _visualizer_proc.poll() is None:
+        return
+    if _visualizer_proc and _visualizer_proc.poll() is not None:
+        _visualizer_proc = None
+    exe = os.environ.get("PYTHON_EXE", sys.executable)
+    _visualizer_proc = subprocess.Popen([exe, "mic_visualizer.py"], creationflags=0x00000008)
+
+
+def stop_visualizer():
+    global _visualizer_proc
+    if not _visualizer_proc:
+        return
+    if _visualizer_proc.poll() is None:
+        _visualizer_proc.terminate()
+        try:
+            _visualizer_proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+    _visualizer_proc = None
 
 SAMPLE_RATE = 16000
 BLOCK_SECONDS = 2.0
@@ -63,52 +91,56 @@ def paste_via_clipboard(text: str, restore: bool = RESTORE_CLIPBOARD, append_spa
         time.sleep(0.05)
         pyperclip.copy(old_clip)
 
-# 3) Stream micro
-with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32',
-                    blocksize=int(SAMPLE_RATE*BLOCK_SECONDS),
-                    callback=audio_callback):
-    print("🎙️ Enregistrement... Ctrl+C pour quitter.")
-    buffered_blocks = []
-    silence_blocks = 0
-    current_partial = ""
-    try:
-        while True:
-            # Récupère un bloc audio
-            audio_block = q.get()
+start_visualizer()
+try:
+    # 3) Stream micro
+    with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype='float32',
+                        blocksize=int(SAMPLE_RATE*BLOCK_SECONDS),
+                        callback=audio_callback):
+        print("🎙️ Enregistrement... Ctrl+C pour quitter.")
+        buffered_blocks = []
+        silence_blocks = 0
+        current_partial = ""
+        try:
+            while True:
+                # Récupère un bloc audio
+                audio_block = q.get()
 
-            # Activité micro : on accumule et on affiche un aperçu incrémental
-            if detect_microphone_activity(audio_block):
-                buffered_blocks.append(audio_block)
-                silence_blocks = 0
-                combined = np.concatenate(buffered_blocks, axis=0)
-                partial_text = transcribe_array(combined)
-                if partial_text and partial_text != current_partial:
-                    print(f"\r{partial_text}", end="", flush=True)
-                    current_partial = partial_text
-                continue
-
-            # Silence : on finalise, on colle via presse-papiers
-            if buffered_blocks:
-                silence_blocks += 1
-                if silence_blocks >= SILENCE_BLOCKS_BEFORE_FLUSH:
-                    combined = np.concatenate(buffered_blocks, axis=0)
-                    clear_partial_line(current_partial)
-                    final_text = transcribe_array(combined)
-                    if final_text:
-                        print(final_text)  # log console (optionnel)
-                        if final_text != last_pasted:
-                            paste_via_clipboard(final_text)
-                            last_pasted = final_text
-                    current_partial = ""
-                    buffered_blocks.clear()
+                # Activité micro : on accumule et on affiche un aperçu incrémental
+                if detect_microphone_activity(audio_block):
+                    buffered_blocks.append(audio_block)
                     silence_blocks = 0
+                    combined = np.concatenate(buffered_blocks, axis=0)
+                    partial_text = transcribe_array(combined)
+                    if partial_text and partial_text != current_partial:
+                        print(f"\r{partial_text}", end="", flush=True)
+                        current_partial = partial_text
+                    continue
 
-    except KeyboardInterrupt:
-        if buffered_blocks:
-            combined = np.concatenate(buffered_blocks, axis=0)
-            clear_partial_line(current_partial)
-            final_text = transcribe_array(combined)
-            if final_text:
-                print(final_text)
-                if final_text != last_pasted:
-                    paste_via_clipboard(final_text)
+                # Silence : on finalise, on colle via presse-papiers
+                if buffered_blocks:
+                    silence_blocks += 1
+                    if silence_blocks >= SILENCE_BLOCKS_BEFORE_FLUSH:
+                        combined = np.concatenate(buffered_blocks, axis=0)
+                        clear_partial_line(current_partial)
+                        final_text = transcribe_array(combined)
+                        if final_text:
+                            print(final_text)  # log console (optionnel)
+                            if final_text != last_pasted:
+                                paste_via_clipboard(final_text)
+                                last_pasted = final_text
+                        current_partial = ""
+                        buffered_blocks.clear()
+                        silence_blocks = 0
+
+        except KeyboardInterrupt:
+            if buffered_blocks:
+                combined = np.concatenate(buffered_blocks, axis=0)
+                clear_partial_line(current_partial)
+                final_text = transcribe_array(combined)
+                if final_text:
+                    print(final_text)
+                    if final_text != last_pasted:
+                        paste_via_clipboard(final_text)
+finally:
+    stop_visualizer()
