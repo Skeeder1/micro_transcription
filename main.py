@@ -13,13 +13,41 @@ _visualizer_proc = None
 
 
 def start_visualizer():
+    """Lance le visualizer en arrière-plan sans fenêtre console visible"""
     global _visualizer_proc
     if _visualizer_proc and _visualizer_proc.poll() is None:
         return
     if _visualizer_proc and _visualizer_proc.poll() is not None:
         _visualizer_proc = None
+    
+    # Utiliser pythonw.exe au lieu de python.exe pour éviter la console
     exe = os.environ.get("PYTHON_EXE", sys.executable)
-    _visualizer_proc = subprocess.Popen([exe, "mic_visualizer.py"], creationflags=0x00000008)
+    
+    # Sur Windows, remplacer python.exe par pythonw.exe
+    if exe.endswith('python.exe'):
+        pythonw_exe = exe.replace('python.exe', 'pythonw.exe')
+        if os.path.exists(pythonw_exe):
+            exe = pythonw_exe
+    
+    # Flags Windows pour processus sans fenêtre
+    # CREATE_NO_WINDOW = 0x08000000 (empêche création fenêtre console)
+    # DETACHED_PROCESS = 0x00000008 (détache du processus parent)
+    startupinfo = None
+    creationflags = 0
+    
+    if sys.platform == 'win32':
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        creationflags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
+    
+    _visualizer_proc = subprocess.Popen(
+        [exe, "mic_visualizer.py"],
+        startupinfo=startupinfo,
+        creationflags=creationflags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
 
 def stop_visualizer():

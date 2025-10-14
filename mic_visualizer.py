@@ -22,12 +22,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <style>
   :root { color-scheme: dark; }
   body { background:#222; margin:0; display:flex; height:100vh; align-items:center; justify-content:center; font-family:Arial, sans-serif; }
-  .panel { width:900px; background:#2b2b2b; border-radius:16px; padding:24px 28px 20px; box-shadow:0 10px 30px rgba(0,0,0,.35); position:relative; color:#ddd; }
-  #mic { height:120px; border-radius:8px; overflow:hidden; background:#1a1a1a; }
-  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
-  select { background:#3a3a3a; color:#f2f2f2; border:0; padding:6px 10px; border-radius:6px; }
-  #status { margin:4px 0 0; font-size:12px; color:#999; }
-  #error { color:#ff6b6b; margin-top:8px; font-size:13px; }
+  .panel { width:580px; background:#2b2b2b; border-radius:12px; padding:14px 18px 12px; box-shadow:0 10px 30px rgba(0,0,0,.35); position:relative; color:#ddd; }
+  #mic { height:90px; border-radius:6px; overflow:hidden; background:#1a1a1a; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+  select { background:#3a3a3a; color:#f2f2f2; border:0; padding:4px 8px; border-radius:4px; font-size:11px; }
+  #status { margin:2px 0 0; font-size:10px; color:#999; }
+  #error { color:#ff6b6b; margin-top:6px; font-size:11px; }
 </style>
 </head>
 <body>
@@ -92,7 +92,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         waveColor: 'rgb(100, 200, 255)',
         progressColor: 'rgb(50, 150, 255)',
         cursorWidth: 0,
-        height: 120,
+        height: 90,
       });
 
       record = wavesurfer.registerPlugin(RecordPlugin.create({
@@ -224,7 +224,7 @@ class Visualizer(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Micro Monitor")
-        self.resize(900, 180)
+        self.resize(600, 140)
 
         self._view = QWebEngineView()
         self._view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
