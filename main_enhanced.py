@@ -48,6 +48,10 @@ APPEND_SPACE = True
 SSE_PORT = 5432
 SSE_HOST = '127.0.0.1'
 
+# Veille automatique
+AUTO_SLEEP_SECONDS = 10.0  # Veille après 10s sans parole
+HOTKEY_TOGGLE = 'alt+w'  # Raccourci pour basculer veille/actif
+
 # ============================================================================
 # ÉTAT GLOBAL
 # ============================================================================
@@ -59,6 +63,11 @@ _sse_clients = []  # Liste des générateurs SSE actifs
 _sse_lock = threading.Lock()
 _executor = ThreadPoolExecutor(max_workers=2)  # Pour transcriptions parallèles
 _last_pasted = ""
+
+# États de veille
+_is_sleeping = False
+_sleep_lock = threading.Lock()
+_last_speech_time = time.time()
 
 audio_queue = queue.Queue()
 
