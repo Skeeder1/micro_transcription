@@ -19,6 +19,7 @@ Ou avec PowerShell :
 - **Transcription finale** : Collage automatique de haute qualité avec contexte complet (modèle Large)
 - **Visualisation audio** : Forme d'onde en temps réel avec indicateur SSE
 - **Double buffering** : Fenêtre glissante pour preview + contexte complet pour production
+- **Mode veille intelligent** : Veille auto après 10s d'inactivité, réactivation instantanée avec Alt+W
 
 ## ⚙️ Architecture
 
@@ -38,7 +39,18 @@ Ou avec PowerShell :
 1. **Lancer** : `run_enhanced.bat`
 2. **Parler** : Le visualizer affiche l'onde et le texte preview
 3. **Pause** : Le texte final est collé automatiquement dans l'application active
-4. **Fermer** : ESC ou fermeture de la fenêtre
+4. **Veille** : Alt+W pour basculer veille/actif (ou ESC, ou fermer visualizer)
+5. **Fermer** : Ctrl+C dans le terminal
+
+### Raccourcis
+
+| Touche | Action |
+|--------|--------|
+| **Alt+W** | Bascule veille/actif |
+| **ESC** | Met en veille (dans visualizer) |
+| **Espace** | Pause/reprend l'enregistrement |
+
+Voir [MODE_VEILLE.md](MODE_VEILLE.md) pour plus de détails.
 
 ## 📁 Structure
 
