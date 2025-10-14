@@ -370,9 +370,15 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("Micro Monitor - Enhanced")
         self.resize(600, 200)  # Hauteur augmentée pour preview text
+        
+        # CORRECTIF: Empêcher la fenêtre de prendre le focus
+        # Cela évite que Alt reste bloquée quand on lance le visualizer avec Alt+W
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         self._view = QWebEngineView()
         self._view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.NoContextMenu)
+        self._view.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)  # Aussi pour la webview
         settings = self._view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
         
@@ -447,10 +453,15 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
 
     def _apply_window_flags(self) -> None:
         flags = self.windowFlags()
+        
+        # Toujours empêcher la prise de focus (même si clics sur la fenêtre)
+        flags |= QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+        
         if self._always_on_top:
             flags |= QtCore.Qt.WindowType.WindowStaysOnTopHint
         else:
             flags &= ~QtCore.Qt.WindowType.WindowStaysOnTopHint
+        
         self.setWindowFlags(flags)
         self.show()
 
