@@ -29,14 +29,14 @@ if errorlevel 1 (
 )
 
 echo.
-echo [INFO] Lancement de main_enhanced.py...
+echo [INFO] Lancement de main_enhanced.py en mode daemon...
 echo.
 
-REM Lancer main_enhanced.py
-.venv\Scripts\python.exe main_enhanced.py
+REM Lancer main_enhanced.py en mode daemon (terminal masque)
+start "" /B .venv\Scripts\pythonw.exe main_enhanced.py
 
 echo.
 echo ================================================
-echo Programme termine
+echo Daemon demarre en arriere-plan
 echo ================================================
-pause
+timeout /t 2 /nobreak >nul
