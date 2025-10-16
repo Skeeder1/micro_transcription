@@ -371,6 +371,12 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         self.setWindowTitle("Micro Monitor - Enhanced")
         self.resize(600, 200)  # Hauteur augmentée pour preview text
         
+        # Positionner la fenêtre en haut au milieu de l'écran
+        screen = QtWidgets.QApplication.primaryScreen().geometry()
+        x = (screen.width() - 600) // 2  # Centrer horizontalement
+        y = 20  # 20 pixels depuis le haut
+        self.move(x, y)
+        
         # CORRECTIF: Empêcher la fenêtre de prendre le focus
         # Cela évite que Alt reste bloquée quand on lance le visualizer avec Alt+W
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
