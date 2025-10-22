@@ -130,10 +130,13 @@ def check_auto_sleep(ctx: AppContext) -> None:
         if ctx.is_sleeping:
             return
 
-    if time.time() - ctx.last_speech_time > config.AUTO_SLEEP_SECONDS:
+    delta = time.time() - ctx.last_speech_time
+    if getattr(config, "DEBUG_AUTO_SLEEP", False):
+        print(f"[DEBUG] time since last speech: {delta:.2f}s (auto_sleep={config.AUTO_SLEEP_SECONDS}s)")
+
+    if delta > config.AUTO_SLEEP_SECONDS:
         print(f"\n⏰ Inactivité détectée ({config.AUTO_SLEEP_SECONDS}s)")
         enter_sleep_mode(ctx)
-
 
 def check_deep_sleep(ctx: AppContext) -> None:
     """Vérifie si on doit passer en veille profonde après 10 min de veille."""

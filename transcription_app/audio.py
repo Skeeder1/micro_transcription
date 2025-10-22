@@ -30,6 +30,9 @@ def make_audio_callback(ctx: AppContext):
 def detect_activity(audio_block: np.ndarray) -> bool:
     """Detect voice activity via RMS energy."""
     rms = float(np.sqrt(np.mean(np.square(audio_block), dtype=np.float64)))
+    if getattr(config, "DEBUG_AUTO_SLEEP", False):
+        # Afficher une ligne concise sans polluer si désactivé
+        print(f"[DEBUG] RMS={rms:.6f} threshold={config.ENERGY_THRESHOLD}")
     return rms > config.ENERGY_THRESHOLD
 
 

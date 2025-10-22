@@ -29,7 +29,7 @@ BLOCK_SECONDS = 0.5
 
 # Seuil d'énergie pour détecter de la parole (0.001-0.01 recommandé)
 # Plus bas = plus sensible, détecte les chuchotements
-ENERGY_THRESHOLD = 0.003
+ENERGY_THRESHOLD = 0.01
 
 # Nombre de blocs silencieux avant de finaliser la transcription
 # 3 blocs * 0.5s = 1.5 seconde de silence minimum
@@ -150,6 +150,10 @@ TOGGLE_COOLDOWN_SECONDS = 0.3
 # Durée en veille avant passage en veille profonde (décharge modèles)
 # 600 secondes = 10 minutes
 DEEP_SLEEP_SECONDS = 600
+
+# Debug: active des logs additionnels pour diagnostiquer l'auto-veille
+# False = logs désactivés (comportement normal)
+DEBUG_AUTO_SLEEP = False
 
 
 # ============================================================================
