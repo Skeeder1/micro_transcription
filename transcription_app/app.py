@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import threading
 import time
 import urllib.request
+from typing import Optional
 
 import sounddevice as sd
 
@@ -37,37 +39,65 @@ def run() -> int:
     print("=" * 70)
     print("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ")
     print("=" * 70)
+    
+    # Démarrer le serveur SSE sans attendre
     start_server(ctx)
-    time.sleep(1.0)
-
-    try:
-        response = urllib.request.urlopen(
-            f"http://{config.SSE_HOST}:{config.SSE_PORT}/ping", timeout=2
-        )
-        if response.read().decode().strip() == "pong":
-            print("✅ Serveur SSE opérationnel")
-        else:
-            print("⚠️ Réponse inattendue du serveur SSE")
-    except Exception as exc:
-        print(f"❌ Serveur SSE indisponible: {exc}")
-        print("⚠️ Le preview ne fonctionnera pas tant que le serveur est hors ligne")
+    
+    # Lancer le visualiseur IMMÉDIATEMENT (UI apparaît tout de suite)
+    print("🚀 Lancement interface graphique...")
+    start_visualizer(ctx)
+    time.sleep(0.3)  # Juste le temps que la fenêtre s'ouvre
+    
+    # Vérifier le serveur SSE en arrière-plan
+    def check_sse():
+        try:
+            response = urllib.request.urlopen(
+                f"http://{config.SSE_HOST}:{config.SSE_PORT}/ping", timeout=2
+            )
+            if response.read().decode().strip() == "pong":
+                print("✅ Serveur SSE opérationnel")
+            else:
+                print("⚠️ Réponse inattendue du serveur SSE")
+        except Exception as exc:
+            print(f"❌ Serveur SSE indisponible: {exc}")
+            print("⚠️ Le preview ne fonctionnera pas tant que le serveur est hors ligne")
+    
+    threading.Thread(target=check_sse, daemon=True, name="SSECheck").start()
 
     hotkey = HotkeyManager(lambda: toggle_sleep_mode(ctx))
     hotkey.start()
 
-    try:
-        init_models(ctx)
-    except Exception as exc:
-        print(f"❌ Impossible de charger les modèles Whisper: {exc}")
-        hotkey.stop()
-        ctx.shutdown()
-        return 1
+    # Charger les modèles en ARRIÈRE-PLAN pendant que l'UI est visible
+    models_ready = threading.Event()
+    models_error: list[Optional[Exception]] = [None]  # Liste pour stocker l'erreur éventuelle
+    
+    def load_models_async():
+        try:
+            print("📥 Chargement modèles en arrière-plan...")
+            broadcast_preview(ctx, "⏳ Chargement des modèles IA...")
+            init_models(ctx)
+            broadcast_preview(ctx, "✅ Modèles chargés - Système prêt!")
+            models_ready.set()
+        except Exception as exc:
+            print(f"❌ Impossible de charger les modèles Whisper: {exc}")
+            models_error[0] = exc
+            models_ready.set()
+    
+    threading.Thread(target=load_models_async, daemon=True, name="ModelLoader").start()
 
     try:
-        start_visualizer(ctx)
-        time.sleep(config.VISUALIZER_READY_DELAY)
-        print("[TEST] Envoi message de test SSE...")
-        broadcast_preview(ctx, "🔊 Système prêt - Parlez maintenant!")
+        # Attendre que les modèles soient chargés avant de traiter l'audio
+        print("⏳ Préparation du système...")
+        models_ready.wait()
+        
+        if models_error[0] is not None:
+            print("❌ Échec chargement modèles, arrêt...")
+            hotkey.stop()
+            stop_visualizer(ctx)
+            ctx.shutdown()
+            return 1
+        
+        print("🔊 Système prêt - Parlez maintenant!")
 
         with _configure_audio_stream(ctx):
             run_main_loop(ctx)
