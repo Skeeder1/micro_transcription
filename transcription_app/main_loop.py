@@ -12,7 +12,7 @@ from . import config
 from .audio import detect_activity, paste_via_clipboard
 from .context import AppContext
 from .models import transcribe_preview, transcribe_production
-from .sleep import check_auto_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
+from .sleep import check_auto_sleep, check_deep_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
 from .sse import broadcast_preview
 
 
@@ -29,12 +29,14 @@ def run(ctx: AppContext) -> None:
     print("   📋 Production → Presse-papiers (haute qualité)")
     print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Basculer veille/actif")
     print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s d'inactivité")
+    print(f"   🌙 Veille profonde après {config.DEEP_SLEEP_SECONDS / 60:.0f} min (décharge RAM)")
 
     try:
         while True:
             now = time.time()
             if now - last_sleep_check >= 1.0:
                 check_auto_sleep(ctx)
+                check_deep_sleep(ctx)  # Vérifier passage en veille profonde
                 check_visualizer_closed(ctx)
                 last_sleep_check = now
 

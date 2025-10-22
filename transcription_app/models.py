@@ -39,6 +39,19 @@ def init_models(ctx: AppContext) -> None:
             print(f"   ✅ Modèle '{config.PRODUCTION_MODEL}' chargé")
 
 
+def unload_models(ctx: AppContext) -> None:
+    """Unload whisper models from memory to free RAM."""
+    with ctx.model_lock:
+        if ctx.preview_model is not None or ctx.production_model is not None:
+            print("🗑️ Déchargement des modèles de la RAM...")
+            ctx.preview_model = None
+            ctx.production_model = None
+            # Force garbage collection pour libérer immédiatement
+            import gc
+            gc.collect()
+            print("   ✅ Modèles déchargés - RAM libérée")
+
+
 def _flatten(audio: np.ndarray) -> np.ndarray:
     return audio.flatten()
 

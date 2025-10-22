@@ -40,9 +40,10 @@ SSE_HOST = "127.0.0.1"
 
 # Sleep / Hotkey
 AUTO_SLEEP_SECONDS = 10.0
-HOTKEY_TOGGLE = "alt gr+;"
+DEEP_SLEEP_SECONDS = 1200.0  # 10 minutes en veille avant veille profonde
+HOTKEY_TOGGLE = "F9"
 HOTKEY_SEQUENCE_WINDOW = 0.6
-TOGGLE_COOLDOWN_SECONDS = 0.8
+TOGGLE_COOLDOWN_SECONDS = 0.3  # Réduit de 0.8s à 0.3s pour réactivité instantanée
 
 # Visualizer
 VISUALIZER_READY_DELAY = 0.3  # Réduit de 2.5s à 0.3s

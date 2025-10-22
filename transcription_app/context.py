@@ -33,11 +33,12 @@ class AppContext:
     audio_queue: queue.Queue = field(default_factory=queue.Queue)
 
     is_sleeping: bool = False
+    is_deep_sleeping: bool = False
+    sleep_start_time: float = 0.0  # Timestamp du début de veille
     sleep_lock: threading.Lock = field(default_factory=threading.Lock)
     last_speech_time: float = field(default_factory=time.time)
     last_toggle_time: float = 0.0
     manual_sleep: bool = False
-    is_reactivating: bool = False
 
     last_pasted: str = ""
 

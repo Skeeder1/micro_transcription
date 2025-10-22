@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import threading
 import time
-from typing import Callable
 
 from . import config
 from .context import AppContext
-from .sse import broadcast_preview
-from .visualizer import start_visualizer, stop_visualizer
+from .models import unload_models, init_models
+from .sse import broadcast_preview, broadcast_state
+from .visualizer import stop_visualizer, start_visualizer
 
 
 def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
@@ -18,49 +17,85 @@ def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
             print("[Veille] Déjà en veille, skip")
             return
         ctx.is_sleeping = True
+        ctx.is_deep_sleeping = False
+        ctx.sleep_start_time = time.time()
         ctx.manual_sleep = manual
 
     print("\n💤 Mode VEILLE activé" + (" (manuel)" if manual else " (auto)"))
-    print(f"   Appuyez sur {config.HOTKEY_TOGGLE.upper()} pour réactiver")
+    print("   Appuyez sur F9 pour réactiver")
+    print(f"   Veille profonde dans {config.DEEP_SLEEP_SECONDS / 60:.0f} minutes...")
 
+    # Au lieu de stopper le visualizer, on change juste son état visuellement
+    broadcast_state(ctx, "sleep")
+    broadcast_preview(ctx, "💤 Mode veille - Appuyez sur F9")
+
+
+def enter_deep_sleep_mode(ctx: AppContext) -> None:
+    """Entre en veille profonde: décharge modèles et ferme visualizer."""
+    with ctx.sleep_lock:
+        if ctx.is_deep_sleeping:
+            print("[Veille Profonde] Déjà en veille profonde, skip")
+            return
+        if not ctx.is_sleeping:
+            print("[Veille Profonde] Doit être en veille simple d'abord")
+            return
+        ctx.is_deep_sleeping = True
+
+    print("\n🌙 Mode VEILLE PROFONDE activé")
+    print("   → Déchargement des modèles IA...")
+    print("   → Fermeture du visualizer...")
+    print("   Appuyez sur F9 pour réactiver (délai: ~3-5s)")
+
+    # Décharger les modèles de RAM
+    unload_models(ctx)
+    
+    # Fermer le visualizer pour économiser ressources
     stop_visualizer(ctx)
-    broadcast_preview(ctx, "")
+    
+    print("   ✅ Veille profonde active - Consommation minimale")
 
 
 def exit_sleep_mode(ctx: AppContext) -> None:
     ctx.last_speech_time = time.time()
-    ctx.is_reactivating = True
+    
+    was_deep_sleeping = False
+    with ctx.sleep_lock:
+        if not ctx.is_sleeping:
+            print("[Veille] Déjà actif, skip")
+            return
+        was_deep_sleeping = ctx.is_deep_sleeping
+        ctx.is_sleeping = False
+        ctx.is_deep_sleeping = False
+        ctx.sleep_start_time = 0.0
+        ctx.manual_sleep = False
 
-    try:
-        with ctx.sleep_lock:
-            if not ctx.is_sleeping:
-                print("[Veille] Déjà actif, skip")
-                ctx.is_reactivating = False
-                return
-            ctx.is_sleeping = False
-            ctx.manual_sleep = False
-
-        print("\n🔊 Mode ACTIF - Système réactivé")
-        print("[Veille] Nettoyage préalable...")
-        stop_visualizer(ctx)
-        time.sleep(0.3)
-
+    print("\n🔊 Mode ACTIF - Système réactivé")
+    
+    if was_deep_sleeping:
+        # Sortie de veille PROFONDE - recharger ressources
+        print("   → Rechargement des modèles IA...")
+        broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
+        
+        try:
+            init_models(ctx)
+            print("   ✅ Modèles rechargés")
+        except Exception as exc:
+            print(f"   ❌ Erreur rechargement modèles: {exc}")
+            broadcast_preview(ctx, "❌ Erreur rechargement - Redémarrez")
+            return
+        
+        print("   → Relancement du visualizer...")
         start_visualizer(ctx)
-        print("[Veille] Attente connexion visualizer...")
-        time.sleep(config.VISUALIZER_READY_DELAY)
-
+        time.sleep(config.VISUALIZER_START_DELAY)
+        
+        broadcast_state(ctx, "active")
         broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
-        print("[Veille] Réactivation complète")
-
-    except Exception as exc:
-        print(f"⚠️ Erreur pendant réactivation: {exc}")
-        with ctx.sleep_lock:
-            ctx.is_sleeping = False
-        ctx.is_reactivating = False
-        raise
-
-    finally:
-        ctx.is_reactivating = False
+        print("[Veille Profonde] Réactivation complète (~3-5s)")
+    else:
+        # Sortie de veille RAPIDE - réactivation instantanée
+        broadcast_state(ctx, "active")
+        broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
+        print("[Veille] Réactivation instantanée complète")
 
 
 def toggle_sleep_mode(ctx: AppContext) -> None:
@@ -77,11 +112,6 @@ def toggle_sleep_mode(ctx: AppContext) -> None:
 
     with ctx.sleep_lock:
         sleeping = ctx.is_sleeping
-        reactivating = ctx.is_reactivating
-
-    if reactivating:
-        print("[Toggle] Réactivation en cours, veuillez patienter...")
-        return
 
     print(f"[Toggle] État actuel: {'VEILLE' if sleeping else 'ACTIF'} → {'ACTIF' if sleeping else 'VEILLE'}")
 
@@ -96,9 +126,6 @@ def toggle_sleep_mode(ctx: AppContext) -> None:
 
 
 def check_auto_sleep(ctx: AppContext) -> None:
-    if ctx.is_reactivating:
-        return
-
     with ctx.sleep_lock:
         if ctx.is_sleeping:
             return
@@ -106,6 +133,27 @@ def check_auto_sleep(ctx: AppContext) -> None:
     if time.time() - ctx.last_speech_time > config.AUTO_SLEEP_SECONDS:
         print(f"\n⏰ Inactivité détectée ({config.AUTO_SLEEP_SECONDS}s)")
         enter_sleep_mode(ctx)
+
+
+def check_deep_sleep(ctx: AppContext) -> None:
+    """Vérifie si on doit passer en veille profonde après 10 min de veille."""
+    with ctx.sleep_lock:
+        # Seulement si en veille simple (pas déjà en profonde)
+        if not ctx.is_sleeping or ctx.is_deep_sleeping:
+            return
+        
+        sleep_duration = time.time() - ctx.sleep_start_time
+        
+        # Si en veille depuis plus de 10 minutes
+        if sleep_duration > config.DEEP_SLEEP_SECONDS:
+            # Sortir du lock avant d'appeler enter_deep_sleep_mode
+            pass
+        else:
+            return
+    
+    # Appeler en dehors du lock
+    print(f"\n⏰ Veille prolongée détectée ({sleep_duration / 60:.1f} min)")
+    enter_deep_sleep_mode(ctx)
 
 
 def update_speech_timer(ctx: AppContext) -> None:
