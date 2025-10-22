@@ -29,7 +29,7 @@ BLOCK_SECONDS = 0.5
 
 # Seuil d'énergie pour détecter de la parole (0.001-0.01 recommandé)
 # Plus bas = plus sensible, détecte les chuchotements
-ENERGY_THRESHOLD = 0.01
+ENERGY_THRESHOLD = 0.005
 
 # Nombre de blocs silencieux avant de finaliser la transcription
 # 3 blocs * 0.5s = 1.5 seconde de silence minimum
