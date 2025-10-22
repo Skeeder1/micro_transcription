@@ -26,7 +26,11 @@ def get_html_template(sse_port: int) -> str:
   .panel {{ width:580px; background:#2b2b2b; border-radius:12px; padding:14px 18px 12px; box-shadow:0 10px 30px rgba(0,0,0,.35); position:relative; color:#ddd; }}
   
   /* Waveform */
-  #mic {{ height:90px; border-radius:6px; overflow:hidden; background:#1a1a1a; }}
+  #mic {{ height:90px; border-radius:6px; overflow:hidden; background:#1a1a1a; transition: opacity 0.3s; }}
+  
+  /* Sleep mode overlay */
+  .panel.sleeping #mic {{ opacity: 0.2; }}
+  .panel.sleeping {{ background:#1a1a1a; }}
   
   /* Toolbar */
   .toolbar {{ display:flex; gap:8px; align-items:center; margin-bottom:6px; }}
@@ -113,6 +117,7 @@ def get_html_template(sse_port: int) -> str:
   </div>
 
   <script src='https://unpkg.com/wavesurfer.js@7'></script>
+  <script src='qrc:///qtwebchannel/qwebchannel.js'></script>
   <script type='module'>
     console.log('[Module] Starting enhanced visualizer...');
     
@@ -161,6 +166,35 @@ def get_html_template(sse_port: int) -> str:
         previewContainer.scrollTop = previewContainer.scrollHeight;
       }}
     }};
+    
+    const handleStateChange = (state) => {{
+      const panel = document.querySelector('.panel');
+      if (state === 'sleep') {{
+        console.log('[State] Entering sleep mode - hiding window');
+        panel.classList.add('sleeping');
+        updatePreview('💤 Mode veille - Appuyez sur F9');
+        setStatus('Mode veille');
+        if (statusLabel) {{
+          statusLabel.style.color = '#ff9966';
+        }}
+        // Appeler Qt pour masquer la fenêtre
+        if (window.qtBridge) {{
+          window.qtBridge.handleStateChange('sleep');
+        }}
+      }} else if (state === 'active') {{
+        console.log('[State] Exiting sleep mode - showing window');
+        panel.classList.remove('sleeping');
+        updatePreview('🔊 Système réactivé - Parlez maintenant!');
+        setStatus('Monitoring active - Preview ON');
+        if (statusLabel) {{
+          statusLabel.style.color = '#6bff6b';
+        }}
+        // Appeler Qt pour afficher la fenêtre
+        if (window.qtBridge) {{
+          window.qtBridge.handleStateChange('active');
+        }}
+      }}
+    }};
 
     const connectSSE = () => {{
       console.log('[SSE] Connecting to http://127.0.0.1:{sse_port}/events');
@@ -175,7 +209,15 @@ def get_html_template(sse_port: int) -> str:
       
       eventSource.onmessage = (event) => {{
         console.log('[SSE] Received:', event.data);
-        updatePreview(event.data);
+        
+        // Vérifier si c'est un message d'état
+        if (event.data.startsWith('STATE:')) {{
+          const state = event.data.substring(6); // Retirer "STATE:"
+          handleStateChange(state);
+        }} else {{
+          // Message de preview normal
+          updatePreview(event.data);
+        }}
       }};
       
       eventSource.onerror = (error) => {{
@@ -299,6 +341,16 @@ def get_html_template(sse_port: int) -> str:
       try {{
         console.log('[Init] Initializing visualizer...');
         
+        // Initialiser Qt WebChannel
+        if (typeof QWebChannel !== 'undefined' && window.qt && window.qt.webChannelTransport) {{
+          new QWebChannel(window.qt.webChannelTransport, function(channel) {{
+            window.qtBridge = channel.objects.qtBridge;
+            console.log('[Init] Qt WebChannel initialized');
+          }});
+        }} else {{
+          console.warn('[Init] Qt WebChannel not available');
+        }}
+        
         if (typeof WaveSurfer === 'undefined') {{
           showError('WaveSurfer non chargé');
           return;
@@ -391,6 +443,7 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         # Page custom pour logs
         class DebugPage(QWebEnginePage):
             def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+                _ = level, sourceID  # Unused but required by signature
                 print(f"[JS] {message} (line {lineNumber})")
         
         page = DebugPage(self._view)
@@ -405,7 +458,11 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
 
         self._always_on_top = True
         self._paused = False
+        self._is_hidden_for_sleep = False  # Track si caché pour veille
         self._apply_window_flags()
+        
+        # Setup bridge Qt pour communication JS -> Python
+        self._setup_qt_bridge()
 
     def _on_feature_permission_requested(self, origin: QtCore.QUrl, feature: QWebEnginePage.Feature) -> None:
         print(f"[Permission] Feature requested: {feature}")
@@ -432,6 +489,33 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         if ok and not self._paused:
             print("[Load] Starting visualizer bridge...")
             self._invoke_js("window.visualizerBridge && window.visualizerBridge.start();")
+    
+    def _setup_qt_bridge(self) -> None:
+        """Setup Qt WebChannel pour communication bidirectionnelle JS <-> Python."""
+        from PySide6.QtWebChannel import QWebChannel
+        
+        class Bridge(QtCore.QObject):
+            def __init__(self, parent_window):
+                super().__init__()
+                self.parent_window = parent_window
+            
+            @QtCore.Slot(str)
+            def handleStateChange(self, state: str):
+                """Appelé depuis JS quand l'état change."""
+                print(f"[Bridge] State change received: {state}")
+                if state == "sleep":
+                    print("[Bridge] Hiding window for sleep mode")
+                    self.parent_window._is_hidden_for_sleep = True
+                    self.parent_window.hide()
+                elif state == "active":
+                    print("[Bridge] Showing window for active mode")
+                    self.parent_window._is_hidden_for_sleep = False
+                    self.parent_window.show()
+        
+        self._bridge = Bridge(self)
+        self._channel = QWebChannel()
+        self._channel.registerObject("qtBridge", self._bridge)
+        self._view.page().setWebChannel(self._channel)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         key = event.key()

@@ -67,25 +67,26 @@ def run() -> int:
     hotkey = HotkeyManager(lambda: toggle_sleep_mode(ctx))
     hotkey.start()
 
-    # Charger les modèles en ARRIÈRE-PLAN pendant que l'UI est visible
-    models_ready = threading.Event()
-    models_error: list[Optional[Exception]] = [None]  # Liste pour stocker l'erreur éventuelle
-    
-    def load_models_async():
-        try:
-            print("📥 Chargement modèles en arrière-plan...")
-            broadcast_preview(ctx, "⏳ Chargement des modèles IA...")
-            init_models(ctx)
-            broadcast_preview(ctx, "✅ Modèles chargés - Système prêt!")
-            models_ready.set()
-        except Exception as exc:
-            print(f"❌ Impossible de charger les modèles Whisper: {exc}")
-            models_error[0] = exc
-            models_ready.set()
-    
-    threading.Thread(target=load_models_async, daemon=True, name="ModelLoader").start()
+    # Charger les modèles uniquement si la transcription est activée
+    if config.ENABLE_TRANSCRIPTION:
+        # Charger les modèles en ARRIÈRE-PLAN pendant que l'UI est visible
+        models_ready = threading.Event()
+        models_error: list[Optional[Exception]] = [None]  # Liste pour stocker l'erreur éventuelle
+        
+        def load_models_async():
+            try:
+                print("📥 Chargement modèles en arrière-plan...")
+                broadcast_preview(ctx, "⏳ Chargement des modèles IA...")
+                init_models(ctx)
+                broadcast_preview(ctx, "✅ Modèles chargés - Système prêt!")
+                models_ready.set()
+            except Exception as exc:
+                print(f"❌ Impossible de charger les modèles Whisper: {exc}")
+                models_error[0] = exc
+                models_ready.set()
+        
+        threading.Thread(target=load_models_async, daemon=True, name="ModelLoader").start()
 
-    try:
         # Attendre que les modèles soient chargés avant de traiter l'audio
         print("⏳ Préparation du système...")
         models_ready.wait()
@@ -98,6 +99,12 @@ def run() -> int:
             return 1
         
         print("🔊 Système prêt - Parlez maintenant!")
+    else:
+        # Mode visualiseur uniquement - pas besoin d'attendre
+        print("🌊 Mode visualiseur actif - Prêt immédiatement!")
+        broadcast_preview(ctx, "🌊 Visualiseur prêt (transcription désactivée)")
+
+    try:
 
         with _configure_audio_stream(ctx):
             run_main_loop(ctx)

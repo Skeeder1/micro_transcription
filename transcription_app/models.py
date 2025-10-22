@@ -21,67 +21,55 @@ def _load_model(name: str) -> WhisperModel:
 
 
 def init_models(ctx: AppContext) -> None:
-    """Load whisper models if not loaded already."""
+    """Load whisper model if not loaded already."""
+    # Skip si transcription désactivée
+    if not config.ENABLE_TRANSCRIPTION:
+        print("ℹ️  Transcription désactivée - Aucun modèle chargé")
+        return
+    
     with ctx.model_lock:
-        if ctx.preview_model is None:
-            try:
-                print("📥 Chargement modèle PREVIEW...")
-                ctx.preview_model = _load_model(config.PREVIEW_MODEL_PRIMARY)
-                print(f"   ✅ Modèle '{config.PREVIEW_MODEL_PRIMARY}' chargé")
-            except Exception as exc:
-                print(
-                    f"   ⚠️ Prévisualisation: fallback '{config.PREVIEW_MODEL_FALLBACK}' ({exc})"
-                )
-                ctx.preview_model = _load_model(config.PREVIEW_MODEL_FALLBACK)
-        if ctx.production_model is None:
-            print("📥 Chargement modèle PRODUCTION...")
-            ctx.production_model = _load_model(config.PRODUCTION_MODEL)
-            print(f"   ✅ Modèle '{config.PRODUCTION_MODEL}' chargé")
+        # Charger un seul modèle pour tout (preview et production)
+        if ctx.model is None:
+            print(f"📥 Chargement modèle Whisper '{config.WHISPER_MODEL}'...")
+            ctx.model = _load_model(config.WHISPER_MODEL)
+            print(f"   ✅ Modèle '{config.WHISPER_MODEL}' chargé")
 
 
 def unload_models(ctx: AppContext) -> None:
-    """Unload whisper models from memory to free RAM."""
+    """Unload whisper model to free memory (deep sleep mode)."""
     with ctx.model_lock:
-        if ctx.preview_model is not None or ctx.production_model is not None:
-            print("🗑️ Déchargement des modèles de la RAM...")
-            ctx.preview_model = None
-            ctx.production_model = None
-            # Force garbage collection pour libérer immédiatement
-            import gc
-            gc.collect()
-            print("   ✅ Modèles déchargés - RAM libérée")
+        if ctx.model is not None:
+            print("🗑️  Déchargement modèle Whisper...")
+            del ctx.model
+            ctx.model = None
+            print("   ✅ Modèle déchargé")
+        
+        # Force garbage collection pour libérer immédiatement la mémoire
+        import gc
+        gc.collect()
+        print("   ✅ Mémoire libérée")
 
 
 def _flatten(audio: np.ndarray) -> np.ndarray:
     return audio.flatten()
 
 
-def _run_transcription(model: WhisperModel, audio: np.ndarray, *, preview: bool) -> Optional[str]:
+def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
+    """Run transcription with the unified model configuration."""
     params = {
         "language": config.LANGUAGE,
         "temperature": config.TEMPERATURE,
+        "beam_size": config.BEAM_SIZE,
+        "vad_filter": config.VAD_FILTER,
+        "condition_on_previous_text": config.CONDITION_ON_PREVIOUS,
+        "word_timestamps": config.WORD_TIMESTAMPS,
+        "best_of": config.BEST_OF,
     }
-    if preview:
-        params.update(
-            beam_size=config.PREVIEW_BEAM_SIZE,
-            vad_filter=config.PREVIEW_VAD_FILTER,
-            condition_on_previous_text=config.PREVIEW_CONDITION_ON_PREVIOUS,
-            word_timestamps=config.PREVIEW_WORD_TIMESTAMPS,
-            best_of=config.PREVIEW_BEST_OF,
-        )
-    else:
-        params.update(
-            beam_size=config.PRODUCTION_BEAM_SIZE,
-            vad_filter=config.PRODUCTION_VAD_FILTER,
-            condition_on_previous_text=config.PRODUCTION_CONDITION_ON_PREVIOUS,
-        )
 
     try:
         segments, _ = model.transcribe(_flatten(audio), **params)
     except Exception as exc:
-        print(
-            f"⚠️ Erreur transcription ({'preview' if preview else 'production'}): {exc}"
-        )
+        print(f"⚠️ Erreur transcription: {exc}")
         return None
 
     text = "".join(segment.text for segment in segments).strip()
@@ -89,16 +77,18 @@ def _run_transcription(model: WhisperModel, audio: np.ndarray, *, preview: bool)
 
 
 def transcribe_preview(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
-    if ctx.preview_model is None:
+    """Transcribe audio for preview using the main model."""
+    if ctx.model is None:
         init_models(ctx)
-    if ctx.preview_model is None:
+    if ctx.model is None:
         return None
-    return _run_transcription(ctx.preview_model, audio, preview=True)
+    return _run_transcription(ctx.model, audio)
 
 
 def transcribe_production(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
-    if ctx.production_model is None:
+    """Transcribe audio for production using the main model."""
+    if ctx.model is None:
         init_models(ctx)
-    if ctx.production_model is None:
+    if ctx.model is None:
         return None
-    return _run_transcription(ctx.production_model, audio, preview=False)
+    return _run_transcription(ctx.model, audio)

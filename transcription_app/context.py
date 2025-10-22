@@ -22,8 +22,8 @@ class AppContext:
     visualizer_proc: Optional[subprocess.Popen] = None
     visualizer_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    preview_model: Optional[WhisperModel] = None
-    production_model: Optional[WhisperModel] = None
+    # Un seul modèle Whisper utilisé pour tout
+    model: Optional[WhisperModel] = None
     model_lock: threading.Lock = field(default_factory=threading.Lock)
 
     sse_clients: List[queue.Queue] = field(default_factory=list)
@@ -34,7 +34,7 @@ class AppContext:
 
     is_sleeping: bool = False
     is_deep_sleeping: bool = False
-    sleep_start_time: float = 0.0  # Timestamp du début de veille
+    sleep_start_time: float = 0.0
     sleep_lock: threading.Lock = field(default_factory=threading.Lock)
     last_speech_time: float = field(default_factory=time.time)
     last_toggle_time: float = 0.0

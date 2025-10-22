@@ -1,9 +1,9 @@
 @echo off
-REM Script de lancement pour main_enhanced.py avec venv
-REM Garantit l'utilisation du bon environnement Python
+REM Script de lancement en mode DEBUG pour main_enhanced.py avec venv
+REM Terminal visible pour voir les messages de debug et les erreurs
 
 echo ================================================
-echo Systeme de Dictee Vocale Avance
+echo Systeme de Dictee Vocale Avance - MODE DEBUG
 echo ================================================
 echo.
 
@@ -35,14 +35,16 @@ if errorlevel 1 (
 )
 
 echo.
-echo [INFO] Lancement de main_enhanced.py en mode daemon...
+echo [INFO] Lancement de main_enhanced.py en MODE DEBUG...
+echo [INFO] Le terminal reste ouvert pour afficher les logs
+echo [INFO] Appuyez sur Ctrl+C pour arreter l'application
 echo.
 
-REM Lancer main_enhanced.py en mode daemon (terminal masque)
-start "" /B .venv\Scripts\pythonw.exe main_enhanced.py
+REM Lancer main_enhanced.py avec python.exe (pas pythonw.exe) pour voir la console
+.venv\Scripts\python.exe main_enhanced.py
 
 echo.
 echo ================================================
-echo Daemon demarre en arriere-plan
+echo Application arretee
 echo ================================================
-timeout /t 2 /nobreak >nul
+pause
