@@ -46,6 +46,7 @@ def start_visualizer(ctx: AppContext) -> None:
             print(f"[Visualizer] Erreur lancement: {exc}")
             ctx.visualizer_proc = None
 
+    # Délai minimal réduit pour apparition plus rapide
     time.sleep(config.VISUALIZER_START_DELAY)
 
 

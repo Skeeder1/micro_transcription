@@ -70,6 +70,22 @@ def broadcast_preview(ctx: AppContext, text: str) -> None:
                 pass
 
 
+def broadcast_state(ctx: AppContext, state: str) -> None:
+    """Send state change command to visualizer (sleep/active).
+    
+    Args:
+        state: 'sleep' pour mode veille, 'active' pour mode actif
+    """
+    message = f"__STATE__{state}"  # Message spécial préfixé
+    with ctx.sse_lock:
+        print(f"\n[SSE] Changement d'état: {state}")
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
 def start_server(ctx: AppContext) -> None:
     """Start the SSE server on a background thread."""
     global _CTX

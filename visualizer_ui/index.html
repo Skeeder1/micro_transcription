@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang='fr'>
+<head>
+  <meta charset='utf-8'>
+  <title>Visualiseur micro avancé</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-sse-port="5432">
+  <div class='panel'>
+    <div class='toolbar'>
+      <select id='mic-select'>
+        <option value='' hidden>Sélection micro</option>
+      </select>
+      <span id='status'>Monitoring...</span>
+      <span id='sse-status' title='SSE connection'></span>
+    </div>
+    
+    <div id='mic' style='margin-top:12px;'></div>
+    
+    <div id='preview-container'>
+      <div id='preview-text' class='empty'>En attente de parole...</div>
+    </div>
+    
+    <div id='error'></div>
+  </div>
+
+  <!-- External libraries -->
+  <script src='https://unpkg.com/wavesurfer.js@7'></script>
+  
+  <!-- Application JavaScript -->
+  <script type='module' src='app.js'></script>
+</body>
+</html>

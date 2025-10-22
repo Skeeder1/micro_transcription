@@ -2,10 +2,14 @@
 
 Reçoit le texte preview depuis main_enhanced.py via Server-Sent Events
 et l'affiche sous la forme d'onde pour feedback utilisateur immédiat.
+
+Frontend: HTML/CSS/JS séparés dans visualizer_ui/
+Backend: Python/Qt pour le processus de fenêtre
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -13,356 +17,30 @@ from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 
-def get_html_template(sse_port: int) -> str:
-    """Génère le template HTML avec EventSource configuré."""
-    return f"""<!DOCTYPE html>
-<html lang='fr'>
-<head>
-<meta charset='utf-8'>
-<title>Visualiseur micro avancé</title>
-<style>
-  :root {{ color-scheme: dark; }}
-  body {{ background:#222; margin:0; display:flex; height:100vh; align-items:center; justify-content:center; font-family:Arial, sans-serif; }}
-  .panel {{ width:580px; background:#2b2b2b; border-radius:12px; padding:14px 18px 12px; box-shadow:0 10px 30px rgba(0,0,0,.35); position:relative; color:#ddd; }}
-  
-  /* Waveform */
-  #mic {{ height:90px; border-radius:6px; overflow:hidden; background:#1a1a1a; }}
-  
-  /* Toolbar */
-  .toolbar {{ display:flex; gap:8px; align-items:center; margin-bottom:6px; }}
-  select {{ background:#3a3a3a; color:#f2f2f2; border:0; padding:4px 8px; border-radius:4px; font-size:11px; }}
-  #status {{ margin:2px 0 0; font-size:10px; color:#999; }}
-  
-  /* Preview text zone */
-  #preview-container {{
-    margin-top: 10px;
-    max-height: 60px;
-    overflow-y: auto;
-    padding: 8px;
-    background: #1a1a1a;
-    border-radius: 6px;
-    font-size: 11px;
-    line-height: 1.4;
-    color: #999;
-    font-style: italic;
-    transition: opacity 0.2s;
-  }}
-  #preview-text {{
-    margin: 0;
-    word-wrap: break-word;
-    animation: fadeIn 0.2s;
-  }}
-  #preview-text.empty {{
-    opacity: 0.3;
-  }}
-  
-  /* Scrollbar styling */
-  #preview-container::-webkit-scrollbar {{
-    width: 6px;
-  }}
-  #preview-container::-webkit-scrollbar-track {{
-    background: #2b2b2b;
-    border-radius: 3px;
-  }}
-  #preview-container::-webkit-scrollbar-thumb {{
-    background: #3a3a3a;
-    border-radius: 3px;
-  }}
-  #preview-container::-webkit-scrollbar-thumb:hover {{
-    background: #4a4a4a;
-  }}
-  
-  /* SSE status indicator */
-  #sse-status {{
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #666;
-    margin-left: 8px;
-    transition: background 0.3s;
-  }}
-  #sse-status.connected {{
-    background: #6bff6b;
-    box-shadow: 0 0 8px #6bff6b;
-  }}
-  
-  #error {{ color:#ff6b6b; margin-top:6px; font-size:11px; }}
-  
-  @keyframes fadeIn {{
-    from {{ opacity: 0; transform: translateY(-5px); }}
-    to {{ opacity: 1; transform: translateY(0); }}
-  }}
-</style>
-</head>
-<body>
-  <div class='panel'>
-    <div class='toolbar'>
-      <select id='mic-select'><option value='' hidden>Sélection micro</option></select>
-      <span id='status'>Monitoring...</span>
-      <span id='sse-status' title='SSE connection'></span>
-    </div>
+def get_visualizer_html_path() -> str:
+    """Retourne le chemin absolu vers index.html du visualizer."""
+    # Obtenir le répertoire du script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    html_path = os.path.join(script_dir, "visualizer_ui", "index.html")
     
-    <div id='mic' style='margin-top:12px;'></div>
+    if not os.path.exists(html_path):
+        raise FileNotFoundError(f"Fichier HTML du visualizer introuvable: {html_path}")
     
-    <div id='preview-container'>
-      <div id='preview-text' class='empty'>En attente de parole...</div>
-    </div>
+    return html_path
+
+
+def inject_sse_port_into_html(html_path: str, sse_port: int) -> str:
+    """Charge le HTML et injecte le port SSE dans l'attribut data-sse-port."""
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html_content = f.read()
     
-    <div id='error'></div>
-  </div>
-
-  <script src='https://unpkg.com/wavesurfer.js@7'></script>
-  <script type='module'>
-    console.log('[Module] Starting enhanced visualizer...');
+    # Remplacer le port SSE dans l'attribut data-sse-port
+    html_content = html_content.replace(
+        'data-sse-port="5432"',
+        f'data-sse-port="{sse_port}"'
+    )
     
-    import RecordPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/record.esm.js';
-    console.log('[Module] RecordPlugin imported');
-    
-    let wavesurfer;
-    let record;
-    let eventSource;
-
-    const micSelect = document.querySelector('#mic-select');
-    const statusLabel = document.querySelector('#status');
-    const previewText = document.querySelector('#preview-text');
-    const previewContainer = document.querySelector('#preview-container');
-    const sseStatus = document.querySelector('#sse-status');
-    
-    console.log('[Module] DOM elements selected');
-
-    const showError = (msg) => {{
-      const errorDiv = document.querySelector('#error');
-      if (errorDiv) {{
-        errorDiv.textContent = msg;
-        console.error(msg);
-      }}
-      if (statusLabel) {{
-        statusLabel.textContent = 'Error: ' + msg;
-        statusLabel.style.color = '#ff6b6b';
-      }}
-    }};
-
-    const setStatus = (msg) => {{
-      if (statusLabel) {{
-        statusLabel.textContent = msg;
-        statusLabel.style.color = '#6bff6b';
-      }}
-    }};
-
-    const updatePreview = (text) => {{
-      if (!text || text.trim() === '') {{
-        previewText.textContent = 'En attente de parole...';
-        previewText.classList.add('empty');
-      }} else {{
-        previewText.textContent = text;
-        previewText.classList.remove('empty');
-        // Auto-scroll vers le bas
-        previewContainer.scrollTop = previewContainer.scrollHeight;
-      }}
-    }};
-
-    const connectSSE = () => {{
-      console.log('[SSE] Connecting to http://127.0.0.1:{sse_port}/events');
-      
-      eventSource = new EventSource('http://127.0.0.1:{sse_port}/events');
-      
-      eventSource.onopen = () => {{
-        console.log('[SSE] Connected');
-        sseStatus.classList.add('connected');
-        setStatus('Monitoring active - Preview ON');
-      }};
-      
-      eventSource.onmessage = (event) => {{
-        console.log('[SSE] Received:', event.data);
-        updatePreview(event.data);
-      }};
-      
-      eventSource.onerror = (error) => {{
-        console.error('[SSE] Error:', error);
-        sseStatus.classList.remove('connected');
-        setStatus('Monitoring active - Preview reconnecting...');
-        
-        // Reconnexion automatique après 2s
-        setTimeout(() => {{
-          if (eventSource.readyState === EventSource.CLOSED) {{
-            console.log('[SSE] Reconnecting...');
-            connectSSE();
-          }}
-        }}, 2000);
-      }};
-    }};
-
-    const createWaveSurfer = () => {{
-      if (record && (record.isRecording() || record.isPaused())) {{
-        record.stopRecording();
-      }}
-      if (wavesurfer) {{
-        try {{
-          wavesurfer.destroy();
-        }} catch (e) {{
-          console.warn('Error destroying wavesurfer:', e);
-        }}
-      }}
-
-      wavesurfer = WaveSurfer.create({{
-        container: '#mic',
-        waveColor: 'rgb(100, 200, 255)',
-        progressColor: 'rgb(50, 150, 255)',
-        cursorWidth: 0,
-        height: 90,
-        barWidth: 2,
-        barGap: 1,
-        barRadius: 2,
-      }});
-
-      record = wavesurfer.registerPlugin(RecordPlugin.create({{
-        renderRecordedAudio: false,
-        scrollingWaveform: true,
-        continuousWaveform: false,
-        scrollingWaveformWindow: 5,
-      }}));
-
-      record.on('record-start', () => {{
-        console.log('[Recorder] Recording started');
-        setStatus('Monitoring active - Preview ON');
-      }});
-
-      record.on('record-stop', () => {{
-        console.log('[Recorder] Recording stopped');
-        setStatus('Monitoring stopped');
-      }});
-    }};
-
-    const ensureDevices = async () => {{
-      try {{
-        const devices = await RecordPlugin.getAvailableAudioDevices();
-        micSelect.innerHTML = '<option value="" hidden>Micro</option>';
-        devices.forEach((device, index) => {{
-          const option = document.createElement('option');
-          option.value = device.deviceId;
-          option.text = device.label || device.deviceId || ('Micro ' + (index + 1));
-          micSelect.appendChild(option);
-        }});
-        if (devices.length && !micSelect.value) {{
-          micSelect.value = devices[0].deviceId;
-        }}
-        console.log('[Devices] Found ' + devices.length + ' audio devices');
-        return devices.length > 0;
-      }} catch (err) {{
-        showError('Erreur accès périphériques: ' + err.message);
-        return false;
-      }}
-    }};
-
-    const startRecording = async () => {{
-      if (!record) {{
-        showError('Record plugin non initialisé');
-        return;
-      }}
-      if (record.isRecording()) {{
-        console.log('[Recorder] Already recording');
-        return;
-      }}
-      try {{
-        const deviceId = micSelect.value || undefined;
-        console.log('[Recorder] Starting recording with deviceId:', deviceId);
-        await record.startRecording({{ deviceId }});
-        console.log('[Recorder] Recording started successfully');
-      }} catch (err) {{
-        showError('Erreur démarrage: ' + err.message);
-      }}
-    }};
-
-    const stopRecording = () => {{
-      if (record && record.isRecording()) {{
-        try {{
-          record.stopRecording();
-        }} catch (e) {{
-          console.warn('[Recorder] Error stopping recording:', e);
-        }}
-      }}
-    }};
-
-    const toggleRecording = () => {{
-      if (!record) {{
-        return;
-      }}
-      if (record.isRecording()) {{
-        stopRecording();
-      }} else {{
-        startRecording();
-      }}
-    }};
-
-    const initialize = async () => {{
-      try {{
-        console.log('[Init] Initializing visualizer...');
-        
-        if (typeof WaveSurfer === 'undefined') {{
-          showError('WaveSurfer non chargé');
-          return;
-        }}
-        if (typeof RecordPlugin === 'undefined') {{
-          showError('RecordPlugin non chargé');
-          return;
-        }}
-        
-        console.log('[Init] WaveSurfer and RecordPlugin loaded');
-        
-        // Initialiser waveform
-        createWaveSurfer();
-        
-        // Charger devices
-        const hasDevice = await ensureDevices();
-        if (!hasDevice) {{
-          showError('Aucun micro détecté');
-          return;
-        }}
-        
-        // Démarrer enregistrement
-        console.log('[Init] Starting auto-record...');
-        await startRecording();
-        
-        // Connecter SSE pour preview
-        connectSSE();
-        
-        console.log('[Init] Initialization complete');
-        
-      }} catch (err) {{
-        showError('Init error: ' + err.message);
-        console.error('[Init] Error:', err);
-      }}
-    }};
-
-    // Bridge pour contrôle externe
-    window.visualizerBridge = {{
-      start: startRecording,
-      stop: stopRecording,
-      toggle: toggleRecording,
-      refreshDevices: ensureDevices,
-      updatePreview: updatePreview,
-    }};
-
-    // Démarrer après chargement
-    if (typeof WaveSurfer !== 'undefined') {{
-      initialize();
-    }} else {{
-      window.addEventListener('load', () => {{
-        setTimeout(initialize, 500);
-      }});
-    }}
-    
-    // Cleanup SSE à la fermeture
-    window.addEventListener('beforeunload', () => {{
-      if (eventSource) {{
-        eventSource.close();
-      }}
-    }});
-  </script>
-</body>
-</html>
-"""
+    return html_content
 
 
 class VisualizerEnhanced(QtWidgets.QMainWindow):
@@ -398,13 +76,28 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         page.featurePermissionRequested.connect(self._on_feature_permission_requested)
         self._view.loadFinished.connect(self._on_load_finished)
         
-        # Charger HTML avec port SSE
-        html = get_html_template(sse_port)
-        self._view.setHtml(html, baseUrl=QtCore.QUrl("https://visualizer.local/"))
+        # Charger HTML depuis fichiers externes avec port SSE injecté
+        try:
+            html_path = get_visualizer_html_path()
+            html_content = inject_sse_port_into_html(html_path, sse_port)
+            
+            # Créer l'URL de base pour les ressources relatives (CSS, JS)
+            html_dir = os.path.dirname(html_path)
+            base_url = QtCore.QUrl.fromLocalFile(html_dir + os.sep)
+            
+            self._view.setHtml(html_content, baseUrl=base_url)
+            print(f"[Visualizer] HTML chargé depuis: {html_path}")
+        except FileNotFoundError as e:
+            print(f"[Visualizer] ERREUR: {e}")
+            # Fallback: afficher un message d'erreur dans la fenêtre
+            error_html = f"<html><body><h1>Erreur</h1><p>{e}</p></body></html>"
+            self._view.setHtml(error_html)
+        
         self.setCentralWidget(self._view)
 
         self._always_on_top = True
         self._paused = False
+        self._check_window_state_timer: QtCore.QTimer | None = None
         self._apply_window_flags()
 
     def _on_feature_permission_requested(self, origin: QtCore.QUrl, feature: QWebEnginePage.Feature) -> None:
@@ -432,6 +125,61 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         if ok and not self._paused:
             print("[Load] Starting visualizer bridge...")
             self._invoke_js("window.visualizerBridge && window.visualizerBridge.start();")
+            # Exposer le bridge Qt vers JavaScript pour hide/show
+            self._setup_qt_bridge()
+
+    def _setup_qt_bridge(self) -> None:
+        """Expose Qt methods to JavaScript for window control."""
+        js_code = """
+        window.qtBridge = {
+            hideWindow: function() {
+                console.log('[QtBridge] hideWindow called');
+                window.__hideWindowRequested = true;
+            },
+            showWindow: function() {
+                console.log('[QtBridge] showWindow called');
+                window.__showWindowRequested = true;
+            }
+        };
+        console.log('[QtBridge] Bridge initialized');
+        """
+        self._invoke_js(js_code)
+        # Démarrer un timer pour vérifier les demandes de hide/show
+        self._check_window_state_timer = QtCore.QTimer()
+        self._check_window_state_timer.timeout.connect(self._check_window_state_requests)
+        self._check_window_state_timer.start(100)  # Vérifier toutes les 100ms
+
+    def _check_window_state_requests(self) -> None:
+        """Check if JavaScript requested window hide/show."""
+        def handle_hide(result):
+            if result:
+                print("[Window] Hide requested from JS")
+                self.hide()
+        
+        def handle_show(result):
+            if result:
+                print("[Window] Show requested from JS")
+                self.show()
+        
+        # Vérifier demande de masquage
+        self._view.page().runJavaScript(
+            "window.__hideWindowRequested || false",
+            handle_hide
+        )
+        self._view.page().runJavaScript(
+            "window.__hideWindowRequested = false; true",
+            lambda _: None
+        )
+        
+        # Vérifier demande d'affichage
+        self._view.page().runJavaScript(
+            "window.__showWindowRequested || false",
+            handle_show
+        )
+        self._view.page().runJavaScript(
+            "window.__showWindowRequested = false; true",
+            lambda _: None
+        )
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         key = event.key()
@@ -448,6 +196,8 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         try:
+            if self._check_window_state_timer:
+                self._check_window_state_timer.stop()
             self._invoke_js("window.visualizerBridge && window.visualizerBridge.stop();")
             QtCore.QTimer.singleShot(100, lambda: None)
         except (RuntimeError, AttributeError) as e:
