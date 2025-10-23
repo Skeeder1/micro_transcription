@@ -9,8 +9,9 @@
 ENABLE_TRANSCRIPTION = True
 
 # Active la transcription en temps réel affichée dans le visualiseur
-# DÉSACTIVÉ = Pas de prévisualisation, transcription directe au curseur uniquement
-ENABLE_PREVIEW = False
+# True = Feedback instantané sur la transcription (recommandé pour tuning)
+# False = Pas de prévisualisation, transcription directe au curseur uniquement
+ENABLE_PREVIEW = True
 
 # Active la transcription finale collée dans le presse-papiers
 # True = Transcription directe avec modèle large au curseur
@@ -29,7 +30,8 @@ BLOCK_SECONDS = 0.5
 
 # Seuil d'énergie pour détecter de la parole (0.001-0.01 recommandé)
 # Plus bas = plus sensible, détecte les chuchotements
-ENERGY_THRESHOLD = 0.005
+# 0.003 = meilleur équilibre après prétraitement audio
+ENERGY_THRESHOLD = 0.003
 
 # Nombre de blocs silencieux avant de finaliser la transcription
 # 3 blocs * 0.5s = 1.5 seconde de silence minimum
@@ -59,7 +61,8 @@ LANGUAGE = "fr"
 
 # Taille du faisceau de recherche (1-10)
 # Plus élevé = meilleure qualité mais plus lent
-BEAM_SIZE = 5
+# 8-10 recommandé avec GPU pour modèle large
+BEAM_SIZE = 8
 
 # Filtre VAD (Voice Activity Detection)
 # True = Ignore les segments sans parole
@@ -75,7 +78,8 @@ WORD_TIMESTAMPS = False
 
 # Nombre de candidats à évaluer (1-5)
 # Plus élevé = meilleure qualité mais plus lent
-BEST_OF = 2
+# 4-5 recommandé avec modèle large pour qualité maximale
+BEST_OF = 4
 
 # Température de sampling (0.0-1.0)
 # 0.0 = Déterministe et précis (recommandé)

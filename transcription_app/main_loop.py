@@ -10,6 +10,7 @@ import numpy as np
 
 from . import config
 from .audio import detect_activity, paste_via_clipboard
+from .audio_preprocessing import preprocess_audio
 from .context import AppContext
 from .models import transcribe_preview, transcribe_production
 from .sleep import check_auto_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
@@ -111,6 +112,8 @@ def run(ctx: AppContext) -> None:
                     if now - last_preview_update >= config.PREVIEW_UPDATE_INTERVAL:
                         if preview_buffer:
                             preview_audio = np.concatenate(preview_buffer, axis=0)
+                            # Apply audio preprocessing (high-pass filter, amplification, normalization)
+                            preview_audio = preprocess_audio(preview_audio, sample_rate=config.SAMPLE_RATE)
                             future = ctx.executor.submit(transcribe_preview, ctx, preview_audio)
                             try:
                                 preview_text = future.result(timeout=config.PREVIEW_TIMEOUT)
@@ -129,6 +132,8 @@ def run(ctx: AppContext) -> None:
                 silence_blocks += 1
                 if silence_blocks >= config.SILENCE_BLOCKS_BEFORE_FLUSH:
                     production_audio = np.concatenate(production_buffer, axis=0)
+                    # Apply audio preprocessing for cleaner final transcription
+                    production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE)
                     print("\r" + " " * 80 + "\r", end="", flush=True)
                     broadcast_preview(ctx, "")
 
@@ -144,6 +149,8 @@ def run(ctx: AppContext) -> None:
         if config.ENABLE_PRODUCTION and production_buffer:
             print("\r" + " " * 80 + "\r", end="", flush=True)
             production_audio = np.concatenate(production_buffer, axis=0)
+            # Apply audio preprocessing on final transcription
+            production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE)
             final_text = transcribe_production(ctx, production_audio)
             if final_text:
                 print(f"📋 {final_text}")
