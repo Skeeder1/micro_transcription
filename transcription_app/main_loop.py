@@ -13,7 +13,7 @@ from .audio import detect_activity, paste_via_clipboard
 from .audio_preprocessing import preprocess_audio
 from .context import AppContext
 from .models import transcribe_preview, transcribe_production
-from .sleep import check_auto_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
+from .sleep import check_auto_sleep, check_deep_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
 from .sse import broadcast_preview
 
 
@@ -33,6 +33,7 @@ def run(ctx: AppContext) -> None:
                 now = time.time()
                 if now - last_sleep_check >= 1.0:
                     check_auto_sleep(ctx)
+                    check_deep_sleep(ctx)
                     check_visualizer_closed(ctx)
                     last_sleep_check = now
 
@@ -80,6 +81,7 @@ def run(ctx: AppContext) -> None:
             now = time.time()
             if now - last_sleep_check >= 1.0:
                 check_auto_sleep(ctx)
+                check_deep_sleep(ctx)
                 check_visualizer_closed(ctx)
                 last_sleep_check = now
 
