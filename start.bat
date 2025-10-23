@@ -6,6 +6,7 @@ REM ================================================
 echo.
 echo ================================================
 echo   Systeme de Dictee Vocale Avance
+echo   (Visualiseur + Transcription)
 echo ================================================
 echo.
 
@@ -23,44 +24,54 @@ echo [INFO] Utilisation du venv Python:
 .venv\Scripts\python.exe --version
 echo.
 
-REM Verifier et installer les dependances du visualiseur
-echo [INFO] Verification des dependances...
-.venv\Scripts\python.exe -c "from flask_cors import CORS; print('Dependances OK')" 2>nul
+REM Nettoyer les instances existantes
+echo [INFO] Nettoyage des instances existantes...
+taskkill /FI "IMAGENAME eq pythonw.exe" /FI "WINDOWTITLE eq *visualizer*" /F >nul 2>&1
+taskkill /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *main_enhanced.py*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Visualiseur Audio*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Micro Monitor*" /F >nul 2>&1
+timeout /t 1 /nobreak >nul
+echo [INFO] Nettoyage termine.
+echo.
+
+REM Verifier PySide6
+echo [INFO] Verification de PySide6...
+.venv\Scripts\python.exe -c "import PySide6" 2>nul
 if errorlevel 1 (
-    echo [WARN] Dependances manquantes. Installation en cours...
-    .venv\Scripts\python.exe -m pip install -q -r visualizer/requirements.txt
+    echo [WARN] PySide6 manquant. Installation en cours...
+    .venv\Scripts\python.exe -m pip install -q PySide6 PySide6-WebEngine
     if errorlevel 1 (
-        echo [ERREUR] Echec de l'installation des dependances
+        echo [ERREUR] Echec de l'installation de PySide6
         pause
         exit /b 1
     )
-    echo [INFO] Dependances installees avec succes
+    echo [INFO] PySide6 installe avec succes
 )
 echo.
 
 echo ================================================
-echo   Demarrage du systeme
+echo   Demarrage du systeme complet
 echo ================================================
 echo.
-echo [INFO] Lancement du visualiseur web...
-echo        Interface: http://127.0.0.1:5500
+echo [INFO] 1/2 - Lancement du visualiseur (fenetre native)...
+echo        - Fenetre toujours au premier plan
+echo        - Masquage automatique en mode veille (F9)
 echo.
 
 REM Lancer le visualiseur en arriere-plan
-start "Visualiseur Audio" /MIN .venv\Scripts\python.exe run_visualizer.py
+start "Visualiseur Audio" /MIN .venv\Scripts\pythonw.exe visualizer_window.py
 
-REM Attendre que le serveur demarre
-timeout /t 3 /nobreak >nul
-
-REM Ouvrir le navigateur
-echo [INFO] Ouverture du navigateur...
-start http://127.0.0.1:5500
+REM Attendre que la fenetre se charge
+timeout /t 2 /nobreak >nul
+echo [INFO] Visualiseur demarre.
 echo.
 
 REM Lancer l'application de transcription au premier plan
-echo [INFO] Lancement de l'application de transcription...
-echo        Appuyez sur F9 pour basculer veille/actif
-echo        Appuyez sur Ctrl+C pour arreter
+echo [INFO] 2/2 - Lancement de l'application de transcription...
+echo.
+echo        Commandes:
+echo        F9        : Basculer veille/actif
+echo        Ctrl+C    : Arreter le systeme
 echo.
 echo ================================================
 echo.
@@ -75,7 +86,8 @@ echo ================================================
 echo.
 echo [INFO] Arret du visualiseur...
 taskkill /FI "WINDOWTITLE eq Visualiseur Audio*" /F >nul 2>&1
+taskkill /FI "WINDOWTITLE eq Micro Monitor*" /F >nul 2>&1
 
 echo.
-echo Systeme arrete.
+echo [INFO] Systeme arrete.
 pause

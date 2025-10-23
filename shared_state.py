@@ -132,6 +132,14 @@ class SharedState:
         state = self._read_state()
         return state.get("source", "unknown")
 
+    def get_state(self) -> dict[str, Any]:
+        """Get complete current state.
+
+        Returns:
+            Dictionary containing all state data
+        """
+        return self._read_state()
+
     def wait_for_state_change(self, timeout: float = 1.0) -> bool:
         """Wait for state to change (polling-based).
 
