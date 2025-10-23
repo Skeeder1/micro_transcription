@@ -34,3 +34,8 @@ desktop.ini
 # Temporary files
 *.tmp
 *.bak
+
+# Shared State (runtime generated)
+.app_state.json
+.app_state.tmp
+.app_state.lock

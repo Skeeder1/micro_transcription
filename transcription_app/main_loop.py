@@ -13,8 +13,8 @@ from .audio import detect_activity, paste_via_clipboard
 from .audio_preprocessing import preprocess_audio
 from .context import AppContext
 from .models import transcribe_preview, transcribe_production
-from .sleep import check_auto_sleep, check_deep_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
-from .sse import broadcast_preview
+from .sleep import check_auto_sleep, check_deep_sleep, is_sleeping, update_speech_timer
+from .state_manager import get_state_manager
 
 
 def run(ctx: AppContext) -> None:
@@ -34,7 +34,6 @@ def run(ctx: AppContext) -> None:
                 if now - last_sleep_check >= 1.0:
                     check_auto_sleep(ctx)
                     check_deep_sleep(ctx)
-                    check_visualizer_closed(ctx)
                     last_sleep_check = now
 
                 if is_sleeping(ctx):
@@ -82,7 +81,6 @@ def run(ctx: AppContext) -> None:
             if now - last_sleep_check >= 1.0:
                 check_auto_sleep(ctx)
                 check_deep_sleep(ctx)
-                check_visualizer_closed(ctx)
                 last_sleep_check = now
 
             if is_sleeping(ctx):
@@ -120,7 +118,9 @@ def run(ctx: AppContext) -> None:
                             try:
                                 preview_text = future.result(timeout=config.PREVIEW_TIMEOUT)
                                 if preview_text:
-                                    broadcast_preview(ctx, preview_text)
+                                    # Mettre à jour l'état partagé (visualiseur indépendant)
+                                    state_mgr = get_state_manager()
+                                    state_mgr.update_preview(preview_text)
                                     print(f"\r💬 {preview_text}", end="", flush=True)
                             except TimeoutError:
                                 print("\r⏱️ Preview timeout (skip)", end="", flush=True)
@@ -137,7 +137,9 @@ def run(ctx: AppContext) -> None:
                     # Apply audio preprocessing for cleaner final transcription
                     production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE)
                     print("\r" + " " * 80 + "\r", end="", flush=True)
-                    broadcast_preview(ctx, "")
+                    # Effacer le preview dans l'état partagé
+                    state_mgr = get_state_manager()
+                    state_mgr.update_preview("")
 
                     final_text = transcribe_production(ctx, production_audio)
                     if final_text:

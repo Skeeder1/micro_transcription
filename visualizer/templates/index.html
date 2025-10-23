@@ -2,8 +2,8 @@
 <html lang='fr'>
 <head>
   <meta charset='utf-8'>
-  <title>Visualiseur micro avancé</title>
-  <link rel="stylesheet" href="qrc:///static/css/visualizer.css">
+  <title>Visualiseur Audio Indépendant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/visualizer.css') }}">
 </head>
 <body>
   <div class='panel'>
@@ -23,13 +23,12 @@
   </div>
 
   <script src='https://unpkg.com/wavesurfer.js@7'></script>
-  <script src='qrc:///qtwebchannel/qwebchannel.js'></script>
 
-  <!-- Inject SSE port from Python -->
+  <!-- Inject SSE port from Flask -->
   <script>
-    window.SSE_PORT = {{SSE_PORT}};
+    window.SSE_PORT = {{ sse_port }};
   </script>
 
-  <script type='module' src="qrc:///static/js/visualizer.js"></script>
+  <script type='module' src="{{ url_for('static', filename='js/visualizer.js') }}"></script>
 </body>
 </html>

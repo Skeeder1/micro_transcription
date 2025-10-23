@@ -1,6 +1,6 @@
-/* Visualiseur micro avancé - JavaScript */
+/* Visualiseur micro avancé - JavaScript - Web mode (no Qt) */
 
-console.log('[Module] Starting enhanced visualizer...');
+console.log('[Module] Starting independent visualizer...');
 
 import RecordPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/record.esm.js';
 console.log('[Module] RecordPlugin imported');
@@ -51,35 +51,27 @@ const updatePreview = (text) => {
 const handleStateChange = (state) => {
   const panel = document.querySelector('.panel');
   if (state === 'sleep') {
-    console.log('[State] Entering sleep mode - hiding window');
+    console.log('[State] Entering sleep mode');
     panel.classList.add('sleeping');
     updatePreview('💤 Mode veille - Appuyez sur F9');
     setStatus('Mode veille');
     if (statusLabel) {
       statusLabel.style.color = '#ff9966';
     }
-    // Appeler Qt pour masquer la fenêtre
-    if (window.qtBridge) {
-      window.qtBridge.handleStateChange('sleep');
-    }
   } else if (state === 'active') {
-    console.log('[State] Exiting sleep mode - showing window');
+    console.log('[State] Exiting sleep mode');
     panel.classList.remove('sleeping');
     updatePreview('🔊 Système réactivé - Parlez maintenant!');
     setStatus('Monitoring active - Preview ON');
     if (statusLabel) {
       statusLabel.style.color = '#6bff6b';
     }
-    // Appeler Qt pour afficher la fenêtre
-    if (window.qtBridge) {
-      window.qtBridge.handleStateChange('active');
-    }
   }
 };
 
 const connectSSE = () => {
-  // Le port SSE sera injecté dynamiquement par Python
-  const ssePort = window.SSE_PORT || 5432;
+  // Le port SSE sera injecté dynamiquement par Flask
+  const ssePort = window.SSE_PORT || 5500;
   console.log(`[SSE] Connecting to http://127.0.0.1:${ssePort}/events`);
 
   eventSource = new EventSource(`http://127.0.0.1:${ssePort}/events`);
@@ -223,16 +215,6 @@ const toggleRecording = () => {
 const initialize = async () => {
   try {
     console.log('[Init] Initializing visualizer...');
-
-    // Initialiser Qt WebChannel
-    if (typeof QWebChannel !== 'undefined' && window.qt && window.qt.webChannelTransport) {
-      new QWebChannel(window.qt.webChannelTransport, function(channel) {
-        window.qtBridge = channel.objects.qtBridge;
-        console.log('[Init] Qt WebChannel initialized');
-      });
-    } else {
-      console.warn('[Init] Qt WebChannel not available');
-    }
 
     if (typeof WaveSurfer === 'undefined') {
       showError('WaveSurfer non chargé');

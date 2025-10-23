@@ -7,8 +7,7 @@ import time
 from . import config
 from .context import AppContext
 from .models import unload_models, init_models
-from .sse import broadcast_preview, broadcast_state
-from .visualizer import stop_visualizer, start_visualizer
+from .state_manager import get_state_manager
 
 
 def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
@@ -25,13 +24,14 @@ def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
     print("   Appuyez sur F9 pour réactiver")
     print(f"   Veille profonde dans {config.DEEP_SLEEP_SECONDS / 60:.0f} minutes...")
 
-    # Au lieu de stopper le visualizer, on change juste son état visuellement
-    broadcast_state(ctx, "sleep")
-    broadcast_preview(ctx, "💤 Mode veille - Appuyez sur F9")
+    # Mettre à jour l'état partagé (visualiseur indépendant)
+    state_mgr = get_state_manager()
+    state_mgr.update_sleep_state(True)
+    state_mgr.update_preview("💤 Mode veille - Appuyez sur F9")
 
 
 def enter_deep_sleep_mode(ctx: AppContext) -> None:
-    """Entre en veille profonde: décharge modèles et ferme visualizer."""
+    """Entre en veille profonde: décharge modèles."""
     with ctx.sleep_lock:
         if ctx.is_deep_sleeping:
             print("[Veille Profonde] Déjà en veille profonde, skip")
@@ -43,21 +43,17 @@ def enter_deep_sleep_mode(ctx: AppContext) -> None:
 
     print("\n🌙 Mode VEILLE PROFONDE activé")
     print("   → Déchargement des modèles IA...")
-    print("   → Fermeture du visualizer...")
     print("   Appuyez sur F9 pour réactiver (délai: ~3-5s)")
 
     # Décharger les modèles de RAM
     unload_models(ctx)
-    
-    # Fermer le visualizer pour économiser ressources
-    stop_visualizer(ctx)
-    
+
     print("   ✅ Veille profonde active - Consommation minimale")
 
 
 def exit_sleep_mode(ctx: AppContext) -> None:
     ctx.last_speech_time = time.time()
-    
+
     was_deep_sleeping = False
     with ctx.sleep_lock:
         if not ctx.is_sleeping:
@@ -70,31 +66,30 @@ def exit_sleep_mode(ctx: AppContext) -> None:
         ctx.manual_sleep = False
 
     print("\n🔊 Mode ACTIF - Système réactivé")
-    
+
+    # Mettre à jour l'état partagé
+    state_mgr = get_state_manager()
+
     if was_deep_sleeping:
-        # Sortie de veille PROFONDE - recharger ressources
+        # Sortie de veille PROFONDE - recharger modèles
         print("   → Rechargement des modèles IA...")
-        broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
-        
+        state_mgr.update_preview("⏳ Rechargement modèles IA...")
+
         try:
             init_models(ctx)
             print("   ✅ Modèles rechargés")
         except Exception as exc:
             print(f"   ❌ Erreur rechargement modèles: {exc}")
-            broadcast_preview(ctx, "❌ Erreur rechargement - Redémarrez")
+            state_mgr.update_preview("❌ Erreur rechargement - Redémarrez")
             return
-        
-        print("   → Relancement du visualizer...")
-        start_visualizer(ctx)
-        time.sleep(config.VISUALIZER_START_DELAY)
-        
-        broadcast_state(ctx, "active")
-        broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
+
+        state_mgr.update_sleep_state(False)
+        state_mgr.update_preview("🔊 Système réactivé - Parlez maintenant!")
         print("[Veille Profonde] Réactivation complète (~3-5s)")
     else:
         # Sortie de veille RAPIDE - réactivation instantanée
-        broadcast_state(ctx, "active")
-        broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
+        state_mgr.update_sleep_state(False)
+        state_mgr.update_preview("🔊 Système réactivé - Parlez maintenant!")
         print("[Veille] Réactivation instantanée complète")
 
 
@@ -166,21 +161,3 @@ def update_speech_timer(ctx: AppContext) -> None:
 def is_sleeping(ctx: AppContext) -> bool:
     with ctx.sleep_lock:
         return ctx.is_sleeping
-
-
-def check_visualizer_closed(ctx: AppContext) -> None:
-    if is_sleeping(ctx):
-        return
-
-    with ctx.sleep_lock:
-        if ctx.manual_sleep:
-            return
-
-    with ctx.visualizer_lock:
-        if not ctx.visualizer_proc:
-            return
-        should_sleep = ctx.visualizer_proc.poll() is not None
-
-    if should_sleep:
-        print("\n🪟 Visualizer fermé (détection auto)")
-        enter_sleep_mode(ctx, manual=False)

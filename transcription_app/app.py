@@ -6,7 +6,6 @@ import contextlib
 import sys
 import threading
 import time
-import urllib.request
 from typing import Optional
 
 import sounddevice as sd
@@ -18,8 +17,7 @@ from .hotkey import HotkeyManager
 from .main_loop import run as run_main_loop
 from .models import init_models
 from .sleep import toggle_sleep_mode
-from .sse import broadcast_preview, start_server
-from .visualizer import start_visualizer, stop_visualizer
+from .state_manager import get_state_manager
 
 
 def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManager:
@@ -37,32 +35,16 @@ def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManage
 def run() -> int:
     ctx = AppContext()
     print("=" * 70)
-    print("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ")
+    print("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ (Module Indépendant)")
     print("=" * 70)
-    
-    # Démarrer le serveur SSE sans attendre
-    start_server(ctx)
-    
-    # Lancer le visualiseur IMMÉDIATEMENT (UI apparaît tout de suite)
-    print("🚀 Lancement interface graphique...")
-    start_visualizer(ctx)
-    time.sleep(0.3)  # Juste le temps que la fenêtre s'ouvre
-    
-    # Vérifier le serveur SSE en arrière-plan
-    def check_sse():
-        try:
-            response = urllib.request.urlopen(
-                f"http://{config.SSE_HOST}:{config.SSE_PORT}/ping", timeout=2
-            )
-            if response.read().decode().strip() == "pong":
-                print("✅ Serveur SSE opérationnel")
-            else:
-                print("⚠️ Réponse inattendue du serveur SSE")
-        except Exception as exc:
-            print(f"❌ Serveur SSE indisponible: {exc}")
-            print("⚠️ Le preview ne fonctionnera pas tant que le serveur est hors ligne")
-    
-    threading.Thread(target=check_sse, daemon=True, name="SSECheck").start()
+    print()
+    print("ℹ️  Le visualiseur est optionnel et complètement indépendant")
+    print("   Lancez-le séparément si vous voulez voir les ondes:")
+    print("   python run_visualizer.py")
+    print()
+
+    # Initialiser le gestionnaire d'état partagé
+    state_mgr = get_state_manager()
 
     hotkey = HotkeyManager(lambda: toggle_sleep_mode(ctx))
     hotkey.start()
@@ -76,9 +58,9 @@ def run() -> int:
         def load_models_async():
             try:
                 print("📥 Chargement modèles en arrière-plan...")
-                broadcast_preview(ctx, "⏳ Chargement des modèles IA...")
+                state_mgr.update_preview("⏳ Chargement des modèles IA...")
                 init_models(ctx)
-                broadcast_preview(ctx, "✅ Modèles chargés - Système prêt!")
+                state_mgr.update_preview("✅ Modèles chargés - Système prêt!")
                 models_ready.set()
             except Exception as exc:
                 print(f"❌ Impossible de charger les modèles Whisper: {exc}")
@@ -94,15 +76,14 @@ def run() -> int:
         if models_error[0] is not None:
             print("❌ Échec chargement modèles, arrêt...")
             hotkey.stop()
-            stop_visualizer(ctx)
             ctx.shutdown()
             return 1
         
         print("🔊 Système prêt - Parlez maintenant!")
     else:
         # Mode visualiseur uniquement - pas besoin d'attendre
-        print("🌊 Mode visualiseur actif - Prêt immédiatement!")
-        broadcast_preview(ctx, "🌊 Visualiseur prêt (transcription désactivée)")
+        print("🌊 Mode écoute actif - Prêt immédiatement!")
+        state_mgr.update_preview("🌊 Écoute audio active (transcription désactivée)")
 
     try:
 
@@ -115,7 +96,6 @@ def run() -> int:
         return 1
     finally:
         hotkey.stop()
-        stop_visualizer(ctx)
         ctx.shutdown()
 
     return 0

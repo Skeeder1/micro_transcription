@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import queue
-import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 from faster_whisper import WhisperModel
 
@@ -19,15 +18,9 @@ from . import config
 class AppContext:
     """Mutable state shared across modules."""
 
-    visualizer_proc: Optional[subprocess.Popen] = None
-    visualizer_lock: threading.Lock = field(default_factory=threading.Lock)
-
     # Un seul modèle Whisper utilisé pour tout
     model: Optional[WhisperModel] = None
     model_lock: threading.Lock = field(default_factory=threading.Lock)
-
-    sse_clients: List[queue.Queue] = field(default_factory=list)
-    sse_lock: threading.Lock = field(default_factory=threading.Lock)
 
     executor: ThreadPoolExecutor = field(init=False)
     audio_queue: queue.Queue = field(default_factory=queue.Queue)
