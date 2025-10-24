@@ -8,26 +8,33 @@ from queue import Empty
 
 import numpy as np
 
-from . import config
-from .audio import detect_activity, paste_via_clipboard
+from shared import config
+from shared.context import AppContext
+from .audio_capture import detect_activity, paste_via_clipboard
 from .audio_preprocessing import preprocess_audio
-from .context import AppContext
 from .models import transcribe_preview, transcribe_production
-from .sleep import check_auto_sleep, check_deep_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
-from .sse import broadcast_preview
+
+
+# These imports will be updated once we move sleep and sse modules
+# from shared.sleep import check_auto_sleep, check_deep_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
+# from api.server import broadcast_preview
 
 
 def run(ctx: AppContext) -> None:
     """Stream microphone audio, manage preview and production outputs."""
+    # Import sleep and API functions here to avoid circular imports
+    from shared.sleep import check_auto_sleep, check_deep_sleep, check_visualizer_closed, is_sleeping, update_speech_timer
+    from api.server import broadcast_preview
+
     # Mode visualiseur uniquement - boucle simplifiée
     if not config.ENABLE_TRANSCRIPTION:
         last_sleep_check = time.time()
-        
+
         print("🎙️ Visualiseur d'ondes actif... (Ctrl+C pour quitter)")
         print("   🌊 Mode visualisation uniquement (transcription désactivée)")
         print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Basculer veille/actif")
         print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s d'inactivité")
-        
+
         try:
             while True:
                 now = time.time()
@@ -48,14 +55,14 @@ def run(ctx: AppContext) -> None:
                     audio_block = ctx.audio_queue.get(timeout=0.1)
                 except Empty:
                     continue
-                
+
                 # Vider simplement la queue, l'audio est capturé par le visualiseur
                 if detect_activity(audio_block):
                     update_speech_timer(ctx)
         except KeyboardInterrupt:
             print("\n👋 Arrêt...")
         return
-    
+
     # Mode transcription complet
     preview_buffer: list[np.ndarray] = []
     production_buffer: list[np.ndarray] = []

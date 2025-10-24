@@ -1,7 +1,4 @@
-"""Hotkey management using pynput.
-
-Changed: F9 now toggles the dictaphone (replaces previous AltGr + ; mapping).
-"""
+"""Hotkey management using pynput."""
 
 from __future__ import annotations
 
@@ -12,20 +9,12 @@ from pynput import keyboard as pynput_keyboard
 
 
 class HotkeyManager:
-    """Listens for the F9 key to toggle the dictaphone.
-
-    The previous implementation used AltGr + ; (with tolerant sequencing).
-    For simplicity and reliability we now trigger the toggle immediately on
-    an F9 press. The old Alt/AltGr/semicolon state tracking is kept but
-    is no longer required for the primary F9 behaviour.
-    """
+    """Listens for the F9 key to toggle the dictaphone."""
 
     def __init__(self, on_toggle: Callable[[], None]) -> None:
         self._on_toggle = on_toggle
         self._listener: Optional[pynput_keyboard.Listener] = None
         self._lock = threading.Lock()
-
-        # Only F9 is used as the toggle hotkey now. Keep minimal state.
         self._state = {"consumed": False}
 
     def start(self) -> None:
@@ -49,13 +38,6 @@ class HotkeyManager:
             pass
         finally:
             self._listener = None
-
-    def _is_semicolon(
-        self, key: Optional[pynput_keyboard.Key | pynput_keyboard.KeyCode]
-    ) -> bool:
-        # Semicolon detection removed; keep method for compatibility but
-        # always return False.
-        return False
 
     def _handle_press(
         self, key: Optional[pynput_keyboard.Key | pynput_keyboard.KeyCode]

@@ -1,4 +1,4 @@
-"""Application-wide configuration constants."""
+"""Core transcription module configuration."""
 
 # ============================================================================
 # FEATURE FLAGS - Activation/Désactivation des fonctionnalités
@@ -118,67 +118,6 @@ PASTE_DELAY_SECONDS = 0.05
 # Ajouter un espace après le texte collé
 # True = Prêt pour continuer à taper
 APPEND_SPACE = True
-
-
-# ============================================================================
-# SERVER - Configuration du serveur SSE (Server-Sent Events)
-# ============================================================================
-
-# Port du serveur SSE pour communication avec le visualiseur
-SSE_PORT = 5432
-
-# Adresse IP du serveur SSE (127.0.0.1 = localhost uniquement)
-SSE_HOST = "127.0.0.1"
-
-
-# ============================================================================
-# SLEEP / HOTKEY - Gestion du mode veille et raccourcis clavier
-# ============================================================================
-
-# Délai d'inactivité avant activation automatique du mode veille en secondes
-# 10 secondes sans parole = passage en veille
-AUTO_SLEEP_SECONDS = 10.0
-
-# Touche de raccourci pour basculer veille/actif
-# "F9" = Appui sur F9 pour activer/désactiver
-HOTKEY_TOGGLE = "F9"
-
-# Fenêtre temporelle pour détecter une séquence de touches en secondes
-# 0.6s = Délai max entre pressions de touches pour une séquence
-HOTKEY_SEQUENCE_WINDOW = 0.6
-
-# Délai minimum entre deux bascules veille/actif en secondes
-# 0.3s = Évite les bascules accidentelles trop rapides
-TOGGLE_COOLDOWN_SECONDS = 0.3
-
-# Durée en veille avant passage en veille profonde (décharge modèles)
-# 600 secondes = 10 minutes
-DEEP_SLEEP_SECONDS = 600
-
-# Debug: active des logs additionnels pour diagnostiquer l'auto-veille
-# False = logs désactivés (comportement normal)
-DEBUG_AUTO_SLEEP = False
-
-
-# ============================================================================
-# VISUALIZER - Configuration du visualiseur d'ondes
-# ============================================================================
-
-# Délai d'attente pour que le visualiseur soit prêt en secondes
-# 0.3s = Temps de chargement de l'interface graphique
-VISUALIZER_READY_DELAY = 0.3
-
-# Délai après démarrage du visualiseur avant utilisation en secondes
-# 0.2s = Temps d'initialisation de WaveSurfer
-VISUALIZER_START_DELAY = 0.2
-
-# Timeout pour l'arrêt gracieux du visualiseur en secondes
-# 2s = Temps max pour fermeture propre avant kill forcé
-VISUALIZER_STOP_TIMEOUT = 2.0
-
-# Timeout pour le kill forcé du visualiseur en secondes
-# 1s = Temps max avant abandon du kill
-VISUALIZER_KILL_TIMEOUT = 1.0
 
 
 # ============================================================================

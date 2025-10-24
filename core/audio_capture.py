@@ -9,8 +9,8 @@ import numpy as np
 import pyperclip
 from pynput import keyboard as pynput_keyboard
 
-from . import config
-from .context import AppContext
+from shared import config
+from shared.context import AppContext
 
 
 _keyboard_controller = pynput_keyboard.Controller()

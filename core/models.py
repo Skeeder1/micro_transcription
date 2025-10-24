@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import gc
 from typing import Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
 
-from . import config
-from .context import AppContext
+from shared import config
+from shared.context import AppContext
 
 
 def _load_model(name: str) -> WhisperModel:
@@ -26,7 +27,7 @@ def init_models(ctx: AppContext) -> None:
     if not config.ENABLE_TRANSCRIPTION:
         print("ℹ️  Transcription désactivée - Aucun modèle chargé")
         return
-    
+
     with ctx.model_lock:
         # Charger un seul modèle pour tout (preview et production)
         if ctx.model is None:
@@ -43,9 +44,8 @@ def unload_models(ctx: AppContext) -> None:
             del ctx.model
             ctx.model = None
             print("   ✅ Modèle déchargé")
-        
+
         # Force garbage collection pour libérer immédiatement la mémoire
-        import gc
         gc.collect()
         print("   ✅ Mémoire libérée")
 

@@ -1,4 +1,4 @@
-"""Application bootstrap and orchestration."""
+"""Core transcription engine - Application bootstrap and orchestration."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ from typing import Optional
 
 import sounddevice as sd
 
-from . import config
-from .audio import make_audio_callback
-from .context import AppContext
-from .hotkey import HotkeyManager
-from .main_loop import run as run_main_loop
-from .models import init_models
-from .sleep import toggle_sleep_mode
-from .sse import broadcast_preview, start_server
-from .visualizer import start_visualizer, stop_visualizer
+from shared import config
+from shared.context import AppContext
+from shared.hotkey import HotkeyManager
+from shared.sleep import toggle_sleep_mode
+from api.server import broadcast_preview, start_server
+from ui.manager import start_visualizer, stop_visualizer
+from core.audio_capture import make_audio_callback
+from core.models import init_models
+from core.processor import run as run_main_loop
 
 
 def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManager:
@@ -35,19 +35,25 @@ def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManage
 
 
 def run() -> int:
+    # Configure UTF-8 encoding for Windows console
+    if sys.platform == "win32":
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
     ctx = AppContext()
     print("=" * 70)
-    print("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ")
+    print("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ v2.0")
     print("=" * 70)
-    
-    # Démarrer le serveur SSE sans attendre
+
+    # Démarrer le serveur API SSE sans attendre
     start_server(ctx)
-    
+
     # Lancer le visualiseur IMMÉDIATEMENT (UI apparaît tout de suite)
     print("🚀 Lancement interface graphique...")
     start_visualizer(ctx)
     time.sleep(0.3)  # Juste le temps que la fenêtre s'ouvre
-    
+
     # Vérifier le serveur SSE en arrière-plan
     def check_sse():
         try:
@@ -55,14 +61,14 @@ def run() -> int:
                 f"http://{config.SSE_HOST}:{config.SSE_PORT}/ping", timeout=2
             )
             if response.read().decode().strip() == "pong":
-                print("✅ Serveur SSE opérationnel")
+                print("✅ Serveur API opérationnel")
             else:
-                print("⚠️ Réponse inattendue du serveur SSE")
+                print("⚠️ Réponse inattendue du serveur API")
         except Exception as exc:
-            print(f"❌ Serveur SSE indisponible: {exc}")
+            print(f"❌ Serveur API indisponible: {exc}")
             print("⚠️ Le preview ne fonctionnera pas tant que le serveur est hors ligne")
-    
-    threading.Thread(target=check_sse, daemon=True, name="SSECheck").start()
+
+    threading.Thread(target=check_sse, daemon=True, name="APICheck").start()
 
     hotkey = HotkeyManager(lambda: toggle_sleep_mode(ctx))
     hotkey.start()
@@ -72,7 +78,7 @@ def run() -> int:
         # Charger les modèles en ARRIÈRE-PLAN pendant que l'UI est visible
         models_ready = threading.Event()
         models_error: list[Optional[Exception]] = [None]  # Liste pour stocker l'erreur éventuelle
-        
+
         def load_models_async():
             try:
                 print("📥 Chargement modèles en arrière-plan...")
@@ -84,20 +90,20 @@ def run() -> int:
                 print(f"❌ Impossible de charger les modèles Whisper: {exc}")
                 models_error[0] = exc
                 models_ready.set()
-        
+
         threading.Thread(target=load_models_async, daemon=True, name="ModelLoader").start()
 
         # Attendre que les modèles soient chargés avant de traiter l'audio
         print("⏳ Préparation du système...")
         models_ready.wait()
-        
+
         if models_error[0] is not None:
             print("❌ Échec chargement modèles, arrêt...")
             hotkey.stop()
             stop_visualizer(ctx)
             ctx.shutdown()
             return 1
-        
+
         print("🔊 Système prêt - Parlez maintenant!")
     else:
         # Mode visualiseur uniquement - pas besoin d'attendre

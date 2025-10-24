@@ -7,8 +7,8 @@ import subprocess
 import sys
 import time
 
-from . import config
-from .context import AppContext
+from shared import config
+from shared.context import AppContext
 
 
 def start_visualizer(ctx: AppContext) -> None:
@@ -36,8 +36,9 @@ def start_visualizer(ctx: AppContext) -> None:
             creationflags = 0x08000000 | 0x00000008
 
         try:
+            # Use the new visualizer app path
             ctx.visualizer_proc = subprocess.Popen(
-                [exe, "mic_visualizer_enhanced.py", str(config.SSE_PORT)],
+                [exe, "-m", "ui.visualizer_app", str(config.SSE_PORT)],
                 startupinfo=startupinfo,
                 creationflags=creationflags,
             )

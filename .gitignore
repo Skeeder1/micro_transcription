@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.pyc
 
 # Virtual Environment
 .venv/
@@ -26,6 +27,7 @@ desktop.ini
 
 # Logs
 *.log
+logs/
 
 # Whisper models cache
 *.bin
@@ -34,3 +36,12 @@ desktop.ini
 # Temporary files
 *.tmp
 *.bak
+nul
+
+# Services configuration (contains API keys)
+services/config.py
+
+# Legacy code (removed in v2.0)
+transcription_app/
+mic_visualizer_enhanced.py
+main_enhanced.py

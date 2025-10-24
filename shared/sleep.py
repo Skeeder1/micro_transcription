@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import time
 
-from . import config
-from .context import AppContext
-from .models import unload_models, init_models
-from .sse import broadcast_preview, broadcast_state
-from .visualizer import stop_visualizer, start_visualizer
+from shared import config
+from shared.context import AppContext
 
 
 def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
+    # Import here to avoid circular imports
+    from api.server import broadcast_preview, broadcast_state
+
     with ctx.sleep_lock:
         if ctx.is_sleeping:
             print("[Veille] Déjà en veille, skip")
@@ -32,6 +32,9 @@ def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
 
 def enter_deep_sleep_mode(ctx: AppContext) -> None:
     """Entre en veille profonde: décharge modèles et ferme visualizer."""
+    from core.models import unload_models
+    from ui.manager import stop_visualizer
+
     with ctx.sleep_lock:
         if ctx.is_deep_sleeping:
             print("[Veille Profonde] Déjà en veille profonde, skip")
@@ -48,16 +51,20 @@ def enter_deep_sleep_mode(ctx: AppContext) -> None:
 
     # Décharger les modèles de RAM
     unload_models(ctx)
-    
+
     # Fermer le visualizer pour économiser ressources
     stop_visualizer(ctx)
-    
+
     print("   ✅ Veille profonde active - Consommation minimale")
 
 
 def exit_sleep_mode(ctx: AppContext) -> None:
+    from core.models import init_models
+    from api.server import broadcast_preview, broadcast_state
+    from ui.manager import start_visualizer
+
     ctx.last_speech_time = time.time()
-    
+
     was_deep_sleeping = False
     with ctx.sleep_lock:
         if not ctx.is_sleeping:
@@ -70,12 +77,12 @@ def exit_sleep_mode(ctx: AppContext) -> None:
         ctx.manual_sleep = False
 
     print("\n🔊 Mode ACTIF - Système réactivé")
-    
+
     if was_deep_sleeping:
         # Sortie de veille PROFONDE - recharger ressources
         print("   → Rechargement des modèles IA...")
         broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
-        
+
         try:
             init_models(ctx)
             print("   ✅ Modèles rechargés")
@@ -83,11 +90,11 @@ def exit_sleep_mode(ctx: AppContext) -> None:
             print(f"   ❌ Erreur rechargement modèles: {exc}")
             broadcast_preview(ctx, "❌ Erreur rechargement - Redémarrez")
             return
-        
+
         print("   → Relancement du visualizer...")
         start_visualizer(ctx)
         time.sleep(config.VISUALIZER_START_DELAY)
-        
+
         broadcast_state(ctx, "active")
         broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
         print("[Veille Profonde] Réactivation complète (~3-5s)")
@@ -144,16 +151,16 @@ def check_deep_sleep(ctx: AppContext) -> None:
         # Seulement si en veille simple (pas déjà en profonde)
         if not ctx.is_sleeping or ctx.is_deep_sleeping:
             return
-        
+
         sleep_duration = time.time() - ctx.sleep_start_time
-        
+
         # Si en veille depuis plus de 10 minutes
         if sleep_duration > config.DEEP_SLEEP_SECONDS:
             # Sortir du lock avant d'appeler enter_deep_sleep_mode
             pass
         else:
             return
-    
+
     # Appeler en dehors du lock
     print(f"\n⏰ Veille prolongée détectée ({sleep_duration / 60:.1f} min)")
     enter_deep_sleep_mode(ctx)
