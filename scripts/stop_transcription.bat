@@ -1,6 +1,8 @@
 @echo off
+setlocal EnableDelayedExpansion
 REM Script d'arret pour le systeme de transcription v2.0
 REM Ferme tous les processus Python et modules associes (core, ui, api)
+REM Protection: ne tue pas le processus appelant
 
 echo ================================================
 echo Arret du Systeme de Dictee Vocale v2.0
@@ -11,79 +13,85 @@ REM Changer vers le repertoire du projet
 cd /d "%~dp0\.."
 
 echo [INFO] Arret des modules du projet...
+echo   [Protection activee: processus appelant preserve]
 echo.
 
-REM Tuer le processus principal (main.py)
+REM Tuer le processus principal (main.py) - exclure cmd.exe et batch scripts
 echo [1/3] Arret du module CORE (main.py)...
-taskkill /F /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *main.py*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Module CORE arrete
-) else (
-    echo   [INFO] Module CORE non trouve
+
+REM Cibler uniquement les processus Python executant main.py
+for /f "tokens=2" %%p in ('wmic process where "name='python.exe' and CommandLine like '%%main.py%%'" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    echo   [INFO] Arret processus CORE PID: !pid!
+    taskkill /F /PID !pid! >nul 2>&1
 )
 
-taskkill /F /FI "IMAGENAME eq pythonw.exe" /FI "COMMANDLINE eq *main.py*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Daemon CORE arrete
+for /f "tokens=2" %%p in ('wmic process where "name='pythonw.exe' and CommandLine like '%%main.py%%'" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    echo   [INFO] Arret daemon CORE PID: !pid!
+    taskkill /F /PID !pid! >nul 2>&1
 )
+
+echo   [OK] Module CORE arrete
 
 echo.
 echo [2/3] Arret du module UI (visualizer)...
-REM Tuer le processus visualizer (ui.visualizer_app ou ui module)
-taskkill /F /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *ui.visualizer_app*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Module UI arrete
-) else (
-    echo   [INFO] Module UI non trouve
+
+REM Tuer les processus UI
+for /f "tokens=2" %%p in ('wmic process where "name='python.exe' and (CommandLine like '%%ui.visualizer_app%%' or CommandLine like '%%-m ui%%')" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    echo   [INFO] Arret processus UI PID: !pid!
+    taskkill /F /PID !pid! >nul 2>&1
 )
 
-taskkill /F /FI "IMAGENAME eq pythonw.exe" /FI "COMMANDLINE eq *ui.visualizer_app*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Daemon UI arrete
+for /f "tokens=2" %%p in ('wmic process where "name='pythonw.exe' and (CommandLine like '%%ui.visualizer_app%%' or CommandLine like '%%-m ui%%')" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    echo   [INFO] Arret daemon UI PID: !pid!
+    taskkill /F /PID !pid! >nul 2>&1
 )
 
-taskkill /F /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *-m ui*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Module UI (via -m) arrete
-)
-
-taskkill /F /FI "IMAGENAME eq pythonw.exe" /FI "COMMANDLINE eq *-m ui*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Daemon UI (via -m) arrete
-)
+echo   [OK] Module UI arrete
 
 echo.
 echo [3/3] Arret du module API (Flask)...
+
 REM Tuer les processus Flask/Werkzeug (api.server)
-taskkill /F /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *api.server*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Module API arrete
-) else (
-    echo   [INFO] Module API non trouve
+for /f "tokens=2" %%p in ('wmic process where "name='python.exe' and CommandLine like '%%api.server%%'" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    echo   [INFO] Arret processus API PID: !pid!
+    taskkill /F /PID !pid! >nul 2>&1
 )
 
-taskkill /F /FI "IMAGENAME eq pythonw.exe" /FI "COMMANDLINE eq *api.server*" 2>nul
-if %errorlevel% equ 0 (
-    echo   [OK] Daemon API arrete
+for /f "tokens=2" %%p in ('wmic process where "name='pythonw.exe' and CommandLine like '%%api.server%%'" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    echo   [INFO] Arret daemon API PID: !pid!
+    taskkill /F /PID !pid! >nul 2>&1
 )
+
+echo   [OK] Module API arrete
 
 echo.
 echo [INFO] Verification finale des processus restants...
 
 REM Verifier si des processus Python du projet sont encore actifs
+REM Cibler uniquement les processus dans le dossier transcription-audio
 set "found=0"
-for /f "tokens=*" %%a in ('tasklist /FI "IMAGENAME eq python.exe" /FO CSV /NH 2^>nul ^| find "python.exe" ^| find /i "transcription-audio"') do set "found=1"
-for /f "tokens=*" %%a in ('tasklist /FI "IMAGENAME eq pythonw.exe" /FO CSV /NH 2^>nul ^| find "pythonw.exe" ^| find /i "transcription-audio"') do set "found=1"
+set "project_path=%CD%"
 
-if %found% equ 1 (
-    echo   [WARN] Certains processus du projet sont encore actifs
-    echo   [ACTION] Tentative d'arret force...
-
-    REM Tuer tous les processus pythonw.exe dans le dossier du projet
-    for /f "tokens=2" %%p in ('tasklist /FI "IMAGENAME eq pythonw.exe" /FO CSV /NH 2^>nul ^| find "pythonw.exe"') do (
-        taskkill /F /PID %%p 2>nul
+for /f "tokens=2" %%p in ('wmic process where "name='pythonw.exe' and CommandLine like '%%transcription-audio%%'" get ProcessId /format:csv 2^>nul ^| findstr /r "[0-9]"') do (
+    set "pid=%%p"
+    set "found=1"
+    
+    REM Verifier que ce n'est pas un processus batch/cmd (notre script)
+    wmic process where "ProcessId=!pid!" get CommandLine /format:csv 2^>nul | findstr /i /c:"main.py" /c:"ui.visualizer" /c:"api.server" >nul
+    if !errorlevel! equ 0 (
+        echo   [WARN] Processus restant detecte PID: !pid!
+        echo   [ACTION] Arret force...
+        taskkill /F /PID !pid! >nul 2>&1
     )
+)
 
+if !found! equ 1 (
     echo   [OK] Nettoyage force termine
 ) else (
     echo   [OK] Aucun processus du projet restant
@@ -98,5 +106,7 @@ echo Modules arretes:
 echo   - Core (transcription)
 echo   - UI (visualizer)
 echo   - API (serveur Flask)
+echo.
+echo Les scripts batch restent actifs (protection).
 echo.
 timeout /t 2 /nobreak >nul

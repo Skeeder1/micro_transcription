@@ -12,8 +12,9 @@ cd /d "%~dp0\.."
 
 REM Arreter toute instance precedente
 echo [ETAPE 1/5] Arret des instances precedentes...
+echo   [INFO] Appel du script stop_transcription.bat...
 call "%~dp0stop_transcription.bat" >nul 2>&1
-timeout /t 1 /nobreak >nul
+timeout /t 2 /nobreak >nul
 echo   [OK] Instances precedentes arretees
 echo.
 

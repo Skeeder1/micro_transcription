@@ -35,11 +35,14 @@ def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManage
 
 
 def run() -> int:
-    # Configure UTF-8 encoding for Windows console
+    # Configure UTF-8 encoding for Windows console (only if console exists)
     if sys.platform == "win32":
         import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        # pythonw.exe n'a pas de console, stdout/stderr peuvent être None
+        if sys.stdout is not None and hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        if sys.stderr is not None and hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
     ctx = AppContext()
     print("=" * 70)
