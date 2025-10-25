@@ -11,6 +11,7 @@ from shared.context import AppContext
 def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
     # Import here to avoid circular imports
     from api.server import broadcast_preview, broadcast_state
+    from queue import Empty
 
     with ctx.sleep_lock:
         if ctx.is_sleeping:
@@ -20,6 +21,18 @@ def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
         ctx.is_deep_sleeping = False
         ctx.sleep_start_time = time.time()
         ctx.manual_sleep = manual
+
+    # Vider la queue audio pour éviter le traitement de blocs obsolètes
+    cleared_blocks = 0
+    try:
+        while True:
+            ctx.audio_queue.get_nowait()
+            cleared_blocks += 1
+    except Empty:
+        pass
+
+    if cleared_blocks > 0:
+        print(f"[Veille] Queue audio vidée ({cleared_blocks} blocs obsolètes supprimés)")
 
     print("\n💤 Mode VEILLE activé" + (" (manuel)" if manual else " (auto)"))
     print("   Appuyez sur F9 pour réactiver")
@@ -62,6 +75,7 @@ def exit_sleep_mode(ctx: AppContext) -> None:
     from core.models import init_models
     from api.server import broadcast_preview, broadcast_state
     from ui.manager import start_visualizer
+    from queue import Empty
 
     ctx.last_speech_time = time.time()
 
@@ -75,6 +89,18 @@ def exit_sleep_mode(ctx: AppContext) -> None:
         ctx.is_deep_sleeping = False
         ctx.sleep_start_time = 0.0
         ctx.manual_sleep = False
+
+    # Vider la queue audio pour éviter le traitement de vieux blocs accumulés
+    cleared_blocks = 0
+    try:
+        while True:
+            ctx.audio_queue.get_nowait()
+            cleared_blocks += 1
+    except Empty:
+        pass
+
+    if cleared_blocks > 0:
+        print(f"[Réveil] Queue audio vidée ({cleared_blocks} blocs obsolètes supprimés)")
 
     print("\n🔊 Mode ACTIF - Système réactivé")
 

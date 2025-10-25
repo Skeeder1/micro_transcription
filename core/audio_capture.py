@@ -22,6 +22,12 @@ def make_audio_callback(ctx: AppContext):
     def _callback(indata, frames, time_info, status):  # type: ignore[override]
         if status:
             print(f"⚠️ Audio status: {status}")
+
+        # Ne capturer l'audio QUE si le système est actif (pas en veille)
+        with ctx.sleep_lock:
+            if ctx.is_sleeping:
+                return  # Ignore audio pendant la veille
+
         ctx.audio_queue.put(indata.copy())
 
     return _callback
@@ -30,9 +36,13 @@ def make_audio_callback(ctx: AppContext):
 def detect_activity(audio_block: np.ndarray) -> bool:
     """Detect voice activity via RMS energy."""
     rms = float(np.sqrt(np.mean(np.square(audio_block), dtype=np.float64)))
-    if getattr(config, "DEBUG_AUTO_SLEEP", False):
-        # Afficher une ligne concise sans polluer si désactivé
-        print(f"[DEBUG] RMS={rms:.6f} threshold={config.ENERGY_THRESHOLD}")
+
+    # Mode debug pour diagnostiquer les problèmes de détection
+    if getattr(config, "DEBUG_AUDIO_LEVEL", False):
+        is_active = rms > config.ENERGY_THRESHOLD
+        status = "✓ ACTIVE" if is_active else "  silent"
+        print(f"\r[AUDIO] RMS={rms:.6f} threshold={config.ENERGY_THRESHOLD} → {status}", end="", flush=True)
+
     return rms > config.ENERGY_THRESHOLD
 
 

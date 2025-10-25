@@ -38,6 +38,12 @@ logs/
 *.bak
 nul
 
+# Test and diagnostic files (generated, not committed)
+scripts/*test*.bat
+scripts/*test*.py
+scripts/*diagnostic*.bat
+DIAGNOSTIC.md
+
 # Services configuration (contains API keys)
 services/config.py
 
