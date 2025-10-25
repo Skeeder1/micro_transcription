@@ -56,7 +56,9 @@ def run() -> int:
 
     # Initialiser le détecteur de voix (si activé)
     if getattr(config, "ENABLE_ADVANCED_VAD", False):
-        log_info("🎯 Initialisation détecteur vocal avancé (Silero VAD + ZCR)...")
+        use_adaptive = getattr(config, "USE_ADAPTIVE_DETECTION", True)
+        mode_str = "adaptatif" if use_adaptive else "seuils fixes"
+        log_info(f"🎯 Initialisation détecteur vocal avancé (mode {mode_str})...")
         try:
             ctx.voice_detector = VoiceDetector(
                 sample_rate=config.SAMPLE_RATE,
@@ -65,8 +67,15 @@ def run() -> int:
                 use_zcr_filter=getattr(config, "USE_ZCR_FILTER", True),
                 zcr_min=getattr(config, "ZCR_MIN", 0.02),
                 zcr_max=getattr(config, "ZCR_MAX", 0.30),
+                use_adaptive=use_adaptive,
+                adaptive_boost_factor=getattr(config, "ADAPTIVE_BOOST_FACTOR", 2.5),
+                adaptive_window_seconds=getattr(config, "ADAPTIVE_WINDOW_SECONDS", 3.0),
             )
-            log_info("   → VAD configuré: Silero + ZCR (tolérance équilibrée)")
+            if use_adaptive:
+                log_info(f"   → Mode adaptatif: boost={getattr(config, 'ADAPTIVE_BOOST_FACTOR', 2.5)}x")
+                log_info("   → Calibration automatique du bruit ambiant (2 premières secondes)")
+            else:
+                log_info("   → Mode seuils fixes: Silero + ZCR")
         except Exception as e:
             log_warn(f"⚠️ Impossible d'initialiser le VAD avancé: {e}")
             log_warn("   → Utilisation du mode RMS basique")

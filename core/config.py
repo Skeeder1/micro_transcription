@@ -67,6 +67,23 @@ ZCR_MAX = 0.30  # Maximum (au-dessus = bruit blanc/sifflement)
 # True = Affiche RMS, probabilité Silero, et ZCR en temps réel
 DEBUG_VAD = False
 
+# Détection adaptative (détecte la parole par-dessus le bruit ambiant)
+# True = Utilise un niveau de référence adaptatif (RECOMMANDÉ pour environnements bruyants)
+# False = Utilise des seuils fixes (mode legacy)
+USE_ADAPTIVE_DETECTION = True
+
+# Facteur de boost nécessaire pour détecter la voix
+# Votre voix doit être X fois plus forte que le bruit ambiant
+# 2.0 = Très sensible (détecte facilement, risque de faux positifs)
+# 2.5 = Équilibré (recommandé pour bureau/café avec musique)
+# 3.0 = Strict (nécessite voix forte, meilleur pour environnements très bruyants)
+ADAPTIVE_BOOST_FACTOR = 2.5
+
+# Durée de la fenêtre de référence pour le niveau ambiant (secondes)
+# Plus court = s'adapte vite aux changements de bruit
+# Plus long = plus stable, moins sensible aux variations
+ADAPTIVE_WINDOW_SECONDS = 3.0
+
 
 # ============================================================================
 # MODELS - Configuration des modèles Whisper
