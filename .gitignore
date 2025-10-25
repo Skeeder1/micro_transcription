@@ -33,6 +33,10 @@ logs/
 *.bin
 *.pt
 
+# Torch/Silero VAD cache
+.cache/
+core/.cache/
+
 # Temporary files
 *.tmp
 *.bak
