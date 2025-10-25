@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 import pyperclip
@@ -11,6 +11,9 @@ from pynput import keyboard as pynput_keyboard
 
 from shared import config
 from shared.context import AppContext
+
+if TYPE_CHECKING:
+    from .voice_detector import VoiceDetector
 
 
 _keyboard_controller = pynput_keyboard.Controller()
@@ -33,8 +36,26 @@ def make_audio_callback(ctx: AppContext):
     return _callback
 
 
-def detect_activity(audio_block: np.ndarray) -> bool:
-    """Detect voice activity via RMS energy."""
+def detect_activity(
+    audio_block: np.ndarray,
+    voice_detector: Optional[VoiceDetector] = None
+) -> bool:
+    """
+    Detect voice activity using advanced VAD or legacy RMS.
+
+    Args:
+        audio_block: Audio chunk to analyze
+        voice_detector: Optional VoiceDetector instance for advanced detection
+
+    Returns:
+        True if voice detected, False if silence or ambient noise
+    """
+    # Advanced VAD mode (Silero + ZCR)
+    if getattr(config, "ENABLE_ADVANCED_VAD", False) and voice_detector is not None:
+        debug = getattr(config, "DEBUG_VAD", False)
+        return voice_detector.is_human_speech(audio_block, debug=debug)
+
+    # Legacy mode: simple RMS threshold
     rms = float(np.sqrt(np.mean(np.square(audio_block), dtype=np.float64)))
 
     # Mode debug pour diagnostiquer les problèmes de détection
