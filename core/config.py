@@ -39,6 +39,36 @@ SILENCE_BLOCKS_BEFORE_FLUSH = 2
 
 
 # ============================================================================
+# VOICE DETECTION - Détection voix humaine vs bruit ambiant
+# ============================================================================
+
+# Active la détection avancée voix/bruit avec Silero VAD
+# True = Utilise Silero VAD + ZCR pour distinguer voix du bruit ambiant
+# False = Utilise uniquement le seuil RMS basique (mode legacy)
+ENABLE_ADVANCED_VAD = True
+
+# Seuil de probabilité Silero VAD (0.0-1.0)
+# 0.3 = Très sensible (détecte chuchotements, peut avoir faux positifs)
+# 0.5 = Équilibré (recommandé, bon compromis voix/bruit)
+# 0.7 = Strict (rejette plus de bruit, peut manquer parole faible)
+SILERO_THRESHOLD = 0.5
+
+# Active le filtre Zero Crossing Rate (ZCR)
+# True = Filtre additionnel pour rejeter bruit blanc/sifflement
+# False = Utilise uniquement Silero VAD
+USE_ZCR_FILTER = True
+
+# Plage ZCR acceptable pour la voix humaine
+# En dehors de cette plage = probablement du bruit
+ZCR_MIN = 0.02  # Minimum (en dessous = bourdonnement/DC offset)
+ZCR_MAX = 0.30  # Maximum (au-dessus = bruit blanc/sifflement)
+
+# Mode debug VAD - Affiche les métriques détaillées
+# True = Affiche RMS, probabilité Silero, et ZCR en temps réel
+DEBUG_VAD = False
+
+
+# ============================================================================
 # MODELS - Configuration des modèles Whisper
 # ============================================================================
 

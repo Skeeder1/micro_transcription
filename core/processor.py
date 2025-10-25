@@ -57,7 +57,7 @@ def run(ctx: AppContext) -> None:
                     continue
 
                 # Vider simplement la queue, l'audio est capturé par le visualiseur
-                if detect_activity(audio_block):
+                if detect_activity(audio_block, ctx.voice_detector):
                     update_speech_timer(ctx)
         except KeyboardInterrupt:
             print("\n👋 Arrêt...")
@@ -104,7 +104,7 @@ def run(ctx: AppContext) -> None:
             except Empty:
                 continue
 
-            if detect_activity(audio_block):
+            if detect_activity(audio_block, ctx.voice_detector):
                 preview_buffer.append(audio_block)
                 production_buffer.append(audio_block)
                 silence_blocks = 0

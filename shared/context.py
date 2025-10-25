@@ -8,11 +8,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from faster_whisper import WhisperModel
 
 from . import config
+
+if TYPE_CHECKING:
+    from core.voice_detector import VoiceDetector
 
 
 @dataclass
@@ -25,6 +28,9 @@ class AppContext:
     # Un seul modèle Whisper utilisé pour tout
     model: Optional[WhisperModel] = None
     model_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    # Détecteur de voix humaine vs bruit ambiant
+    voice_detector: Optional[VoiceDetector] = None
 
     sse_clients: List[queue.Queue] = field(default_factory=list)
     sse_lock: threading.Lock = field(default_factory=threading.Lock)

@@ -21,6 +21,7 @@ from ui.manager import start_visualizer, stop_visualizer
 from core.audio_capture import make_audio_callback
 from core.models import init_models
 from core.processor import run as run_main_loop
+from core.voice_detector import VoiceDetector
 
 
 def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManager:
@@ -52,6 +53,26 @@ def run() -> int:
     log_info("=" * 70)
     log_info("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ v2.0")
     log_info("=" * 70)
+
+    # Initialiser le détecteur de voix (si activé)
+    if getattr(config, "ENABLE_ADVANCED_VAD", False):
+        log_info("🎯 Initialisation détecteur vocal avancé (Silero VAD + ZCR)...")
+        try:
+            ctx.voice_detector = VoiceDetector(
+                sample_rate=config.SAMPLE_RATE,
+                silero_threshold=getattr(config, "SILERO_THRESHOLD", 0.5),
+                rms_threshold=config.ENERGY_THRESHOLD,
+                use_zcr_filter=getattr(config, "USE_ZCR_FILTER", True),
+                zcr_min=getattr(config, "ZCR_MIN", 0.02),
+                zcr_max=getattr(config, "ZCR_MAX", 0.30),
+            )
+            log_info("   → VAD configuré: Silero + ZCR (tolérance équilibrée)")
+        except Exception as e:
+            log_warn(f"⚠️ Impossible d'initialiser le VAD avancé: {e}")
+            log_warn("   → Utilisation du mode RMS basique")
+            ctx.voice_detector = None
+    else:
+        log_info("🔊 Utilisation détection RMS basique (mode legacy)")
 
     # Démarrer le serveur API SSE (daemon thread)
     log_info("🌐 Démarrage serveur API SSE...")
@@ -164,6 +185,14 @@ def run() -> int:
     finally:
         hotkey.stop()
         stop_visualizer(ctx)
+
+        # Décharger le détecteur vocal si présent
+        if ctx.voice_detector is not None:
+            try:
+                ctx.voice_detector.unload_model()
+            except Exception:
+                pass
+
         ctx.shutdown()
 
     return 0
