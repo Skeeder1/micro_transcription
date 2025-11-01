@@ -74,7 +74,8 @@ DEBUG_AUTO_SLEEP = False
 # System Tray: afficher une icône dans la barre système (Ubuntu/Linux)
 # True = Icône système avec menu pour contrôler l'application
 # False = Pas d'icône système (mode simple)
-ENABLE_SYSTEM_TRAY = True
+# NOTE: Désactivé car incompatible avec mode daemon (nécessite Qt dans processus principal)
+ENABLE_SYSTEM_TRAY = False
 
 
 __all__ = [

@@ -123,8 +123,13 @@ echo "   [1/3] Core (transcription Whisper)"
 echo "   [2/3] API (serveur Flask SSE)"
 echo "   [3/3] UI (visualiseur Qt6)"
 echo ""
+echo "   NOTE: Mode arriere-plan - Hotkey F9 peut ne pas fonctionner"
+echo "   Pour utiliser F9, lancez: ./start_foreground.sh"
+echo ""
 
 # Sur Linux, lancer en arriere-plan avec nohup
+# AVERTISSEMENT: Le mode arriere-plan peut ne pas supporter les hotkeys (F9)
+# Pour hotkeys: utilisez ./start_foreground.sh
 nohup $PYTHON_EXE main.py > /tmp/transcription_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 
 echo "   [OK] Systeme demarre en arriere-plan (PID: $!)"
