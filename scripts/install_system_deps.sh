@@ -27,6 +27,7 @@ apt install -y \
     xsel \
     portaudio19-dev \
     libxcb-xinerama0 \
+    libxcb-cursor0 \
     python3-venv \
     imagemagick
 
