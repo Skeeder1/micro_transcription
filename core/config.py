@@ -45,7 +45,8 @@ SILENCE_BLOCKS_BEFORE_FLUSH = 2
 # Active la détection avancée voix/bruit avec Silero VAD
 # True = Utilise Silero VAD + ZCR pour distinguer voix du bruit ambiant
 # False = Utilise uniquement le seuil RMS basique (mode legacy)
-ENABLE_ADVANCED_VAD = True
+# NOTE: Désactivé temporairement car nécessite torch (installation en cours)
+ENABLE_ADVANCED_VAD = False
 
 # Seuil de probabilité Silero VAD (0.0-1.0)
 # 0.3 = Très sensible (détecte chuchotements, peut avoir faux positifs)

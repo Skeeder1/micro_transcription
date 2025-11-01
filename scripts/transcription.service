@@ -1,0 +1,27 @@
+[Unit]
+Description=Systeme de Dictee Vocale Avance v2.0
+Documentation=https://github.com/votre-repo/micro_transcription
+After=network.target sound.target pulseaudio.service pipewire.service
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory=%h/projet/micro_transcription
+Environment="PATH=%h/projet/micro_transcription/.venv/bin:/usr/local/bin:/usr/bin"
+ExecStart=%h/projet/micro_transcription/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Limites de ressources
+MemoryMax=4G
+CPUQuota=200%
+
+# Variables d'environnement pour GUI
+Environment="DISPLAY=:0"
+Environment="XAUTHORITY=%h/.Xauthority"
+Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus"
+
+[Install]
+WantedBy=default.target

@@ -71,6 +71,11 @@ DEEP_SLEEP_SECONDS = 600
 # False = logs désactivés (comportement normal)
 DEBUG_AUTO_SLEEP = False
 
+# System Tray: afficher une icône dans la barre système (Ubuntu/Linux)
+# True = Icône système avec menu pour contrôler l'application
+# False = Pas d'icône système (mode simple)
+ENABLE_SYSTEM_TRAY = True
+
 
 __all__ = [
     # Core
@@ -114,4 +119,5 @@ __all__ = [
     "TOGGLE_COOLDOWN_SECONDS",
     "DEEP_SLEEP_SECONDS",
     "DEBUG_AUTO_SLEEP",
+    "ENABLE_SYSTEM_TRAY",
 ]

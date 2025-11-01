@@ -21,7 +21,15 @@ from ui.manager import start_visualizer, stop_visualizer
 from core.audio_capture import make_audio_callback
 from core.models import init_models
 from core.processor import run as run_main_loop
-from core.voice_detector import VoiceDetector
+
+# System tray support (optional)
+try:
+    from ui.system_tray import SystemTrayManager, is_system_tray_available
+    SYSTEM_TRAY_AVAILABLE = True
+except ImportError:
+    SYSTEM_TRAY_AVAILABLE = False
+    SystemTrayManager = None  # type: ignore
+    is_system_tray_available = lambda: False  # type: ignore
 
 
 def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManager:
@@ -56,30 +64,38 @@ def run() -> int:
 
     # Initialiser le détecteur de voix (si activé)
     if getattr(config, "ENABLE_ADVANCED_VAD", False):
-        use_adaptive = getattr(config, "USE_ADAPTIVE_DETECTION", True)
-        mode_str = "adaptatif" if use_adaptive else "seuils fixes"
-        log_info(f"🎯 Initialisation détecteur vocal avancé (mode {mode_str})...")
         try:
-            ctx.voice_detector = VoiceDetector(
-                sample_rate=config.SAMPLE_RATE,
-                silero_threshold=getattr(config, "SILERO_THRESHOLD", 0.5),
-                rms_threshold=config.ENERGY_THRESHOLD,
-                use_zcr_filter=getattr(config, "USE_ZCR_FILTER", True),
-                zcr_min=getattr(config, "ZCR_MIN", 0.02),
-                zcr_max=getattr(config, "ZCR_MAX", 0.30),
-                use_adaptive=use_adaptive,
-                adaptive_boost_factor=getattr(config, "ADAPTIVE_BOOST_FACTOR", 2.5),
-                adaptive_window_seconds=getattr(config, "ADAPTIVE_WINDOW_SECONDS", 3.0),
-            )
-            if use_adaptive:
-                log_info(f"   → Mode adaptatif: boost={getattr(config, 'ADAPTIVE_BOOST_FACTOR', 2.5)}x")
-                log_info("   → Calibration automatique du bruit ambiant (2 premières secondes)")
-            else:
-                log_info("   → Mode seuils fixes: Silero + ZCR")
-        except Exception as e:
-            log_warn(f"⚠️ Impossible d'initialiser le VAD avancé: {e}")
+            from core.voice_detector import VoiceDetector
+        except ImportError as e:
+            log_warn(f"⚠️ Impossible d'importer VoiceDetector: {e}")
+            log_warn("   Installation requise: pip install torch torchaudio onnxruntime")
             log_warn("   → Utilisation du mode RMS basique")
             ctx.voice_detector = None
+        else:
+            use_adaptive = getattr(config, "USE_ADAPTIVE_DETECTION", True)
+            mode_str = "adaptatif" if use_adaptive else "seuils fixes"
+            log_info(f"🎯 Initialisation détecteur vocal avancé (mode {mode_str})...")
+            try:
+                ctx.voice_detector = VoiceDetector(
+                    sample_rate=config.SAMPLE_RATE,
+                    silero_threshold=getattr(config, "SILERO_THRESHOLD", 0.5),
+                    rms_threshold=config.ENERGY_THRESHOLD,
+                    use_zcr_filter=getattr(config, "USE_ZCR_FILTER", True),
+                    zcr_min=getattr(config, "ZCR_MIN", 0.02),
+                    zcr_max=getattr(config, "ZCR_MAX", 0.30),
+                    use_adaptive=use_adaptive,
+                    adaptive_boost_factor=getattr(config, "ADAPTIVE_BOOST_FACTOR", 2.5),
+                    adaptive_window_seconds=getattr(config, "ADAPTIVE_WINDOW_SECONDS", 3.0),
+                )
+                if use_adaptive:
+                    log_info(f"   → Mode adaptatif: boost={getattr(config, 'ADAPTIVE_BOOST_FACTOR', 2.5)}x")
+                    log_info("   → Calibration automatique du bruit ambiant (2 premières secondes)")
+                else:
+                    log_info("   → Mode seuils fixes: Silero + ZCR")
+            except Exception as e:
+                log_warn(f"⚠️ Impossible d'initialiser le VAD avancé: {e}")
+                log_warn("   → Utilisation du mode RMS basique")
+                ctx.voice_detector = None
     else:
         log_info("🔊 Utilisation détection RMS basique (mode legacy)")
 
@@ -116,6 +132,32 @@ def run() -> int:
 
     hotkey = HotkeyManager(lambda: toggle_sleep_mode(ctx))
     hotkey.start()
+
+    # Initialiser le system tray si activé et disponible
+    tray_manager = None
+    if config.ENABLE_SYSTEM_TRAY and SYSTEM_TRAY_AVAILABLE:
+        if is_system_tray_available():
+            log_info("🎨 Initialisation system tray...")
+            try:
+                def quit_app():
+                    """Callback pour quitter l'application depuis le tray."""
+                    log_info("⏹️ Arrêt demandé depuis le system tray")
+                    raise KeyboardInterrupt()
+
+                tray_manager = SystemTrayManager(
+                    ctx,
+                    on_sleep_toggle=lambda: toggle_sleep_mode(ctx),
+                    on_quit=quit_app,
+                )
+                tray_manager.show()
+                log_info("✅ System tray activé")
+            except Exception as exc:
+                log_warn(f"⚠️ Impossible d'activer le system tray: {exc}")
+                tray_manager = None
+        else:
+            log_warn("⚠️ System tray non supporté par votre environnement de bureau")
+    elif config.ENABLE_SYSTEM_TRAY and not SYSTEM_TRAY_AVAILABLE:
+        log_warn("⚠️ System tray activé dans config mais PySide6 non disponible")
 
     # Charger les modèles uniquement si la transcription est activée
     if config.ENABLE_TRANSCRIPTION:
@@ -193,6 +235,14 @@ def run() -> int:
         return 1
     finally:
         hotkey.stop()
+
+        # Nettoyer le system tray si initialisé
+        if tray_manager is not None:
+            try:
+                tray_manager.cleanup()
+            except Exception:
+                pass
+
         stop_visualizer(ctx)
 
         # Décharger le détecteur vocal si présent

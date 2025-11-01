@@ -21,19 +21,26 @@ def start_visualizer(ctx: AppContext) -> None:
         if ctx.visualizer_proc:
             ctx.visualizer_proc = None
 
+        # Determine Python executable to use
         exe = os.environ.get("PYTHON_EXE", sys.executable)
-        if exe.endswith("python.exe"):
+
+        # Windows-specific: prefer pythonw.exe to hide console
+        if sys.platform == "win32" and exe.endswith("python.exe"):
             pythonw_exe = exe.replace("python.exe", "pythonw.exe")
             if os.path.exists(pythonw_exe):
                 exe = pythonw_exe
 
+        # Platform-specific subprocess configuration
         startupinfo = None
         creationflags = 0
+
         if sys.platform == "win32":
+            # Windows: hide console window
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
-            creationflags = 0x08000000 | 0x00000008
+            creationflags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        # Linux: no special flags needed (runs in foreground by default)
 
         try:
             # Use the new visualizer app path
