@@ -91,7 +91,7 @@ ADAPTIVE_WINDOW_SECONDS = 3.0
 # ============================================================================
 
 # Modèle Whisper unique utilisé pour toute transcription
-# "small" = Rapide sur CPU (recommandé si pas de GPU)
+# "small" = Rapide sur CPU (recommandé si pas de GPU) - 2-3s de latence
 # "medium" = Bon compromis qualité/vitesse (nécessite GPU ou CPU puissant)
 # "large" = Meilleure qualité mais TRÈS LENT sur CPU, RAPIDE avec GPU
 WHISPER_MODEL = "large"

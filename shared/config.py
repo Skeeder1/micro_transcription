@@ -60,8 +60,8 @@ HOTKEY_TOGGLE = "F9"
 HOTKEY_SEQUENCE_WINDOW = 0.6
 
 # Délai minimum entre deux bascules veille/actif en secondes
-# 0.3s = Évite les bascules accidentelles trop rapides
-TOGGLE_COOLDOWN_SECONDS = 0.3
+# 1.0s = Évite les bascules accidentelles et race conditions pendant rechargement modèles
+TOGGLE_COOLDOWN_SECONDS = 1.0
 
 # Durée en veille avant passage en veille profonde (décharge modèles)
 # 600 secondes = 10 minutes

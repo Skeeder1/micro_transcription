@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Callable, Optional
 
 from pynput import keyboard as pynput_keyboard
@@ -16,6 +17,7 @@ class HotkeyManager:
         self._listener: Optional[pynput_keyboard.Listener] = None
         self._lock = threading.Lock()
         self._state = {"consumed": False}
+        self._last_press_time = 0.0
 
     def start(self) -> None:
         if self._listener is not None:
@@ -49,12 +51,25 @@ class HotkeyManager:
                 if key is None:
                     return
                 # Immediate toggle on F9 key
-                if key == pynput_keyboard.Key.f9 and not self._state.get("consumed", False):
-                    self._state["consumed"] = True
-                    triggered = True
+                if key == pynput_keyboard.Key.f9:
+                    # Protection: si consumed depuis > 2s, forcer reset
+                    if self._state.get("consumed", False):
+                        time_stuck = time.time() - self._last_press_time
+                        if time_stuck > 2.0:
+                            print(f"[Hotkey] WARN: consumed flag stuck for {time_stuck:.1f}s, forcing reset")
+                            self._state["consumed"] = False
+
+                    if not self._state.get("consumed", False):
+                        self._state["consumed"] = True
+                        self._last_press_time = time.time()
+                        triggered = True
 
             except AttributeError:
                 pass
+            except Exception as exc:
+                # NOUVEAU: Logger toute exception
+                print(f"[Hotkey] ERROR in press handler: {exc}")
+                self._state["consumed"] = False  # Reset en cas d'erreur
 
         if triggered:
             threading.Thread(target=self._on_toggle, name="HotkeyToggle", daemon=True).start()
@@ -72,3 +87,7 @@ class HotkeyManager:
 
             except AttributeError:
                 pass
+            except Exception as exc:
+                # NOUVEAU: Logger et forcer reset
+                print(f"[Hotkey] ERROR in release handler: {exc}")
+                self._state["consumed"] = False

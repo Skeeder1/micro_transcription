@@ -33,6 +33,7 @@ def start_visualizer(ctx: AppContext) -> None:
         # Platform-specific subprocess configuration
         startupinfo = None
         creationflags = 0
+        env = os.environ.copy()
 
         if sys.platform == "win32":
             # Windows: hide console window
@@ -40,7 +41,12 @@ def start_visualizer(ctx: AppContext) -> None:
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
             creationflags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
-        # Linux: no special flags needed (runs in foreground by default)
+        else:
+            # Linux: Force software rendering to avoid OpenGL/EGL crashes
+            env["QT_XCB_GL_INTEGRATION"] = "none"
+            env["QT_QUICK_BACKEND"] = "software"
+            env["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu --disable-software-rasterizer --use-gl=disabled"
+            env["LIBGL_ALWAYS_SOFTWARE"] = "1"
 
         try:
             # Use the new visualizer app path
@@ -48,6 +54,7 @@ def start_visualizer(ctx: AppContext) -> None:
                 [exe, "-m", "ui.visualizer_app", str(config.SSE_PORT)],
                 startupinfo=startupinfo,
                 creationflags=creationflags,
+                env=env,
             )
             print(f"[Visualizer] Lancé (PID: {ctx.visualizer_proc.pid})")
         except Exception as exc:

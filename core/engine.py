@@ -58,6 +58,14 @@ def run() -> int:
     init_logger()
 
     ctx = AppContext()
+
+    # Vérifier que last_speech_time est bien initialisé à maintenant
+    log_info(f"[Init] AppContext created at {time.strftime('%H:%M:%S', time.localtime(ctx.last_speech_time))}")
+    log_info(f"[Init] Current time is {time.strftime('%H:%M:%S', time.localtime(time.time()))}")
+    delta = time.time() - ctx.last_speech_time
+    if delta > 1.0:
+        log_info(f"[Init] WARNING: last_speech_time is {delta:.1f}s in the past!")
+
     log_info("=" * 70)
     log_info("🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ v2.0")
     log_info("=" * 70)

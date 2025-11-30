@@ -115,6 +115,13 @@ def exit_sleep_mode(ctx: AppContext) -> None:
         except Exception as exc:
             print(f"   ❌ Erreur rechargement modèles: {exc}")
             broadcast_preview(ctx, "❌ Erreur rechargement - Redémarrez")
+
+            # NOUVEAU: Restaurer l'état sleep au lieu de laisser incohérent
+            with ctx.sleep_lock:
+                ctx.is_sleeping = True
+                ctx.is_deep_sleeping = True
+
+            print("   → Système remis en veille suite à l'erreur")
             return
 
         print("   → Relancement du visualizer...")
@@ -143,6 +150,8 @@ def toggle_sleep_mode(ctx: AppContext) -> None:
 
     ctx.last_toggle_time = current_time
 
+    print(f"[Toggle] F9 pressed at {time.strftime('%H:%M:%S', time.localtime(current_time))}")
+
     with ctx.sleep_lock:
         sleeping = ctx.is_sleeping
 
@@ -164,6 +173,15 @@ def check_auto_sleep(ctx: AppContext) -> None:
             return
 
     delta = time.time() - ctx.last_speech_time
+
+    # Logging conditionnel toutes les 5 secondes
+    if not hasattr(check_auto_sleep, '_last_log'):
+        check_auto_sleep._last_log = 0.0
+
+    if time.time() - check_auto_sleep._last_log > 5.0:
+        print(f"[AutoSleep] Delta: {delta:.1f}s / {config.AUTO_SLEEP_SECONDS:.1f}s")
+        check_auto_sleep._last_log = time.time()
+
     if getattr(config, "DEBUG_AUTO_SLEEP", False):
         print(f"[DEBUG] time since last speech: {delta:.2f}s (auto_sleep={config.AUTO_SLEEP_SECONDS}s)")
 

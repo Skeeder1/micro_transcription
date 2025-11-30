@@ -42,7 +42,7 @@ class AppContext:
     is_deep_sleeping: bool = False
     sleep_start_time: float = 0.0
     sleep_lock: threading.Lock = field(default_factory=threading.Lock)
-    last_speech_time: float = field(default_factory=time.time)
+    last_speech_time: float = 0.0
     last_toggle_time: float = 0.0
     manual_sleep: bool = False
 
@@ -50,6 +50,7 @@ class AppContext:
 
     def __post_init__(self) -> None:
         self.executor = ThreadPoolExecutor(max_workers=config.EXECUTOR_MAX_WORKERS)
+        self.last_speech_time = time.time()
 
     def shutdown(self) -> None:
         """Release unmanaged resources."""
