@@ -22,8 +22,8 @@ class TestVoiceDetector:
 
     def test_noise_detection(self, voice_detector, noise_audio):
         """Test that low-level noise is not detected as speech."""
-        # First calibrate with noise
-        for _ in range(5):
+        # First calibrate with noise (10 chunks required)
+        for _ in range(12):
             voice_detector.is_human_speech(noise_audio)
 
         is_speech = voice_detector.is_human_speech(noise_audio)
@@ -31,8 +31,8 @@ class TestVoiceDetector:
 
     def test_loud_noise_rejection(self, voice_detector, noise_audio, loud_noise_audio):
         """Test that loud noise without voice characteristics is rejected."""
-        # Calibrate with quiet noise
-        for _ in range(5):
+        # Calibrate with quiet noise (10 chunks required)
+        for _ in range(12):
             voice_detector.is_human_speech(noise_audio)
 
         # Loud noise should be rejected by Silero VAD
@@ -83,8 +83,8 @@ class TestVoiceDetector:
         """Test that reference level updates during calibration."""
         initial_ref = voice_detector._reference_rms
 
-        # Run through calibration
-        for _ in range(10):
+        # Run through calibration (10 chunks required)
+        for _ in range(12):
             voice_detector.is_human_speech(noise_audio)
 
         final_ref = voice_detector._reference_rms
@@ -113,8 +113,8 @@ class TestVoiceDetectorRecalibration:
         vd = VoiceDetector(sample_rate=sample_rate)
         noise_audio = np.random.randn(8000).astype(np.float32) * 0.01
 
-        # Complete initial calibration
-        for _ in range(5):
+        # Complete initial calibration (10 chunks required)
+        for _ in range(12):
             vd.is_human_speech(noise_audio)
 
         # Ensure calibration is complete

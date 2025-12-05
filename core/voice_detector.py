@@ -23,8 +23,10 @@ from shared.exceptions import ModelLoadError
 # =============================================================================
 
 # Calibration settings
-CALIBRATION_CHUNKS = 4  # Number of chunks for initial calibration (~2s at 0.5s/chunk)
+CALIBRATION_CHUNKS = 10  # Number of chunks for initial calibration (~5s at 0.5s/chunk)
 RECALIBRATION_SILENCE_THRESHOLD = 30.0  # Recalibrate after 30s of silence
+MIN_ABSOLUTE_RMS_FLOOR = 0.0005  # Minimum RMS floor (prevents division by zero)
+NOISE_FLOOR_MULTIPLIER = 1.1  # Dynamic threshold = noise_floor * 1.1 (just above noise)
 
 # Silero VAD requirements
 SILERO_SAMPLES_16K = 512  # Required samples for 16kHz
@@ -79,7 +81,7 @@ class VoiceDetector:
         """
         self.sample_rate = sample_rate
         self.silero_threshold = silero_threshold
-        self.rms_threshold = rms_threshold
+        self.rms_threshold = rms_threshold  # Initial/fallback threshold from config
         self.use_zcr_filter = use_zcr_filter
         self.zcr_min = zcr_min
         self.zcr_max = zcr_max
@@ -103,6 +105,10 @@ class VoiceDetector:
         self._is_calibrating: bool = True
         self._calibration_count: int = 0
         self._max_calibration_count: int = CALIBRATION_CHUNKS
+
+        # Dynamic threshold - calibrated from actual noise floor
+        self._dynamic_rms_threshold: float = self.rms_threshold
+        self._noise_floor: float = 0.0
 
         # Recalibration state
         self._seconds_since_last_speech: float = 0.0
@@ -197,10 +203,23 @@ class VoiceDetector:
     def _complete_calibration(self) -> None:
         """Complete calibration phase and set initial reference level."""
         if self._rms_history:
-            self._reference_rms = float(np.median(self._rms_history))
-            self._reference_rms = max(self._reference_rms, self.rms_threshold)
+            # Use 25th percentile to exclude outliers (e.g., coughs, bumps)
+            self._noise_floor = float(np.percentile(self._rms_history, 25))
+            self._noise_floor = max(self._noise_floor, MIN_ABSOLUTE_RMS_FLOOR)
+
+            # Set reference RMS (used for boost factor calculation)
+            self._reference_rms = self._noise_floor
+
+            # Calculate dynamic threshold = noise_floor * multiplier
+            # This ensures we detect audio significantly above the noise floor
+            self._dynamic_rms_threshold = self._noise_floor * NOISE_FLOOR_MULTIPLIER
+            self._dynamic_rms_threshold = max(self._dynamic_rms_threshold, MIN_ABSOLUTE_RMS_FLOOR)
+
         self._is_calibrating = False
-        print(f"🎯 Calibration terminée: niveau ambiant = {self._reference_rms:.6f}")
+        print(f"🎯 Calibration terminée:")
+        print(f"   Niveau de bruit (25th percentile): {self._noise_floor:.6f}")
+        print(f"   Seuil dynamique ({NOISE_FLOOR_MULTIPLIER}x bruit): {self._dynamic_rms_threshold:.6f}")
+        print(f"   Seuil config (référence): {self.rms_threshold:.6f}")
 
     def _get_boost_factor(self, current_rms: float) -> float:
         """Calculate how much louder current audio is vs ambient."""
@@ -385,8 +404,8 @@ class VoiceDetector:
 
         Steps:
         1. Update reference level (always, for calibration)
-        2. Absolute RMS floor check (reject near-silence)
-        3. Check if calibrating
+        2. Check if calibrating (reject all during calibration)
+        3. Dynamic RMS floor check (reject near-noise-floor)
         4. Check boost factor
         5. Silero VAD confirmation
         6. Optional ZCR validation
@@ -394,19 +413,19 @@ class VoiceDetector:
         # Always update reference level first (needed for calibration)
         self._update_reference_level(self._last_rms)
 
-        # Step 0: Absolute RMS floor - reject near-silence regardless of reference
-        # This prevents false positives when reference is calibrated very low
-        if self._last_rms < self.rms_threshold:
-            if debug:
-                print(f"[VAD] RMS={self._last_rms:.6f} < {self.rms_threshold} → SILENCE (seuil absolu)")
-            self._check_recalibration(False)
-            return False
-
-        # During calibration, reject everything
+        # During calibration, reject everything but keep collecting samples
         if self._is_calibrating:
             if debug:
                 remaining = self._max_calibration_count - self._calibration_count
-                print(f"[VAD] CALIBRATION: {remaining} chunks restants...")
+                print(f"[VAD] CALIBRATION: {remaining} chunks restants (RMS={self._last_rms:.6f})...")
+            return False
+
+        # Step 1: Dynamic RMS floor check
+        # Use the calibrated threshold based on actual noise floor
+        if self._last_rms < self._dynamic_rms_threshold:
+            if debug:
+                print(f"[VAD] RMS={self._last_rms:.6f} < {self._dynamic_rms_threshold:.6f} → SILENCE (seuil dynamique)")
+            self._check_recalibration(False)
             return False
 
         # Step 1: Check energy boost
@@ -549,6 +568,8 @@ class VoiceDetector:
             "silero_probability": self._last_silero_prob,
             "zero_crossing_rate": self._last_zcr,
             "reference_rms": self._reference_rms,
+            "noise_floor": self._noise_floor,
+            "dynamic_threshold": self._dynamic_rms_threshold,
             "boost_factor": self._last_boost,
             "is_calibrating": 1.0 if self._is_calibrating else 0.0,
             "seconds_since_speech": self._seconds_since_last_speech,

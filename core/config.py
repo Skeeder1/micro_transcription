@@ -74,10 +74,11 @@ USE_ADAPTIVE_DETECTION = True
 
 # Facteur de boost nécessaire pour détecter la voix
 # Votre voix doit être X fois plus forte que le bruit ambiant
-# 2.0 = Très sensible (détecte facilement, risque de faux positifs)
-# 2.5 = Équilibré (recommandé pour bureau/café avec musique)
-# 3.0 = Strict (nécessite voix forte, meilleur pour environnements très bruyants)
-ADAPTIVE_BOOST_FACTOR = 2.5
+# 1.3 = Très sensible (détecte facilement, risque de faux positifs)
+# 1.5 = Sensible (recommandé pour micros bruyants)
+# 2.0 = Équilibré (recommandé pour bureau calme)
+# 2.5 = Strict (nécessite voix forte, meilleur pour environnements très bruyants)
+ADAPTIVE_BOOST_FACTOR = 1.5
 
 # Durée de la fenêtre de référence pour le niveau ambiant (secondes)
 # Plus court = s'adapte vite aux changements de bruit
