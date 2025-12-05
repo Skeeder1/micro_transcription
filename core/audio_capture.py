@@ -102,38 +102,6 @@ def detect_activity(
     return rms > config.ENERGY_THRESHOLD
 
 
-def compute_waveform_metrics(audio_block: np.ndarray) -> tuple[float, float]:
-    """
-    Compute normalized RMS and Peak for waveform visualization.
-
-    Uses adaptive normalization so microphone sensitivity doesn't affect display.
-    Optimized for high frequency calls (~40 Hz).
-
-    Args:
-        audio_block: Raw audio chunk from sounddevice
-
-    Returns:
-        (normalized_rms, peak) tuple, both in 0-1 range
-    """
-    # Flatten to 1D if needed
-    audio = audio_block.flatten().astype(np.float32)
-
-    # Calculate raw metrics
-    rms = float(np.sqrt(np.mean(np.square(audio))))
-    peak = float(np.abs(audio).max())
-
-    # Adaptive normalization: RMS relative to peak
-    # This makes the display independent of microphone sensitivity
-    if peak > 0.001:
-        # Normalize RMS by peak, scale for visibility
-        normalized_rms = (rms / peak) * 0.6
-    else:
-        normalized_rms = 0.0
-
-    # Clamp to [0, 1] range
-    return min(normalized_rms, 1.0), min(peak, 1.0)
-
-
 def _paste_linux_xdotool(text: str) -> bool:
     """
     Paste text using xdotool (Linux X11 native).
