@@ -14,6 +14,7 @@ const statusLabel = document.querySelector('#status');
 const previewText = document.querySelector('#preview-text');
 const previewContainer = document.querySelector('#preview-container');
 const sseStatus = document.querySelector('#sse-status');
+const recBtn = document.querySelector('#rec-btn');
 
 console.log('[Module] DOM elements selected');
 
@@ -77,6 +78,30 @@ const handleStateChange = (state) => {
   }
 };
 
+const handleRecordingChange = (state) => {
+  if (state === 'recording') {
+    console.log('[Recording] Microphone active');
+    recBtn.classList.remove('rec-paused');
+    recBtn.classList.add('rec-active');
+    recBtn.textContent = '🎤';
+    recBtn.title = 'Enregistrement actif (F8 pour pause)';
+    setStatus('🎤 Enregistrement actif');
+    if (statusLabel) {
+      statusLabel.style.color = '#6bff6b';
+    }
+  } else if (state === 'paused') {
+    console.log('[Recording] Microphone paused');
+    recBtn.classList.remove('rec-active');
+    recBtn.classList.add('rec-paused');
+    recBtn.textContent = '⏸️';
+    recBtn.title = 'Enregistrement en pause (F8 pour reprendre)';
+    setStatus('⏸️ Enregistrement en pause');
+    if (statusLabel) {
+      statusLabel.style.color = '#ff9966';
+    }
+  }
+};
+
 const connectSSE = () => {
   // Le port SSE sera injecté dynamiquement par Python
   const ssePort = window.SSE_PORT || 5432;
@@ -97,6 +122,9 @@ const connectSSE = () => {
     if (event.data.startsWith('STATE:')) {
       const state = event.data.substring(6); // Retirer "STATE:"
       handleStateChange(state);
+    } else if (event.data.startsWith('RECORDING:')) {
+      const state = event.data.substring(10); // Retirer "RECORDING:"
+      handleRecordingChange(state);
     } else {
       // Message de preview normal
       updatePreview(event.data);

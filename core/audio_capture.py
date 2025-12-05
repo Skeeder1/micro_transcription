@@ -63,6 +63,11 @@ def make_audio_callback(ctx: AppContext):
             if ctx.is_sleeping:
                 return  # Ignore audio pendant la veille
 
+        # Ne capturer l'audio QUE si l'enregistrement est activé (F8)
+        with ctx.recording_lock:
+            if not ctx.is_recording:
+                return  # Ignore audio quand enregistrement désactivé
+
         ctx.audio_queue.put(indata.copy())
 
     return _callback

@@ -4,20 +4,31 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict
 
 from pynput import keyboard as pynput_keyboard
 
 
 class HotkeyManager:
-    """Listens for the F9 key to toggle the dictaphone."""
+    """
+    Listens for hotkeys to control the dictaphone.
 
-    def __init__(self, on_toggle: Callable[[], None]) -> None:
-        self._on_toggle = on_toggle
+    Hotkeys:
+    - F8: Toggle recording (microphone on/off)
+    - F9: Toggle sleep mode
+    """
+
+    def __init__(
+        self,
+        on_toggle_sleep: Callable[[], None],
+        on_toggle_recording: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._on_toggle_sleep = on_toggle_sleep
+        self._on_toggle_recording = on_toggle_recording
         self._listener: Optional[pynput_keyboard.Listener] = None
         self._lock = threading.Lock()
-        self._state = {"consumed": False}
-        self._last_press_time = 0.0
+        self._state: Dict[str, bool] = {"f8_consumed": False, "f9_consumed": False}
+        self._last_press_time: Dict[str, float] = {"f8": 0.0, "f9": 0.0}
 
     def start(self) -> None:
         if self._listener is not None:
@@ -44,35 +55,58 @@ class HotkeyManager:
     def _handle_press(
         self, key: Optional[pynput_keyboard.Key | pynput_keyboard.KeyCode]
     ) -> None:
-        triggered = False
+        triggered_f8 = False
+        triggered_f9 = False
 
         with self._lock:
             try:
                 if key is None:
                     return
-                # Immediate toggle on F9 key
-                if key == pynput_keyboard.Key.f9:
-                    # Protection: si consumed depuis > 2s, forcer reset
-                    if self._state.get("consumed", False):
-                        time_stuck = time.time() - self._last_press_time
-                        if time_stuck > 2.0:
-                            print(f"[Hotkey] WARN: consumed flag stuck for {time_stuck:.1f}s, forcing reset")
-                            self._state["consumed"] = False
 
-                    if not self._state.get("consumed", False):
-                        self._state["consumed"] = True
-                        self._last_press_time = time.time()
-                        triggered = True
+                # F8: Toggle recording
+                if key == pynput_keyboard.Key.f8 and self._on_toggle_recording:
+                    if self._state.get("f8_consumed", False):
+                        time_stuck = time.time() - self._last_press_time.get("f8", 0)
+                        if time_stuck > 2.0:
+                            self._state["f8_consumed"] = False
+
+                    if not self._state.get("f8_consumed", False):
+                        self._state["f8_consumed"] = True
+                        self._last_press_time["f8"] = time.time()
+                        triggered_f8 = True
+
+                # F9: Toggle sleep
+                elif key == pynput_keyboard.Key.f9:
+                    if self._state.get("f9_consumed", False):
+                        time_stuck = time.time() - self._last_press_time.get("f9", 0)
+                        if time_stuck > 2.0:
+                            self._state["f9_consumed"] = False
+
+                    if not self._state.get("f9_consumed", False):
+                        self._state["f9_consumed"] = True
+                        self._last_press_time["f9"] = time.time()
+                        triggered_f9 = True
 
             except AttributeError:
                 pass
             except Exception as exc:
-                # NOUVEAU: Logger toute exception
                 print(f"[Hotkey] ERROR in press handler: {exc}")
-                self._state["consumed"] = False  # Reset en cas d'erreur
+                self._state["f8_consumed"] = False
+                self._state["f9_consumed"] = False
 
-        if triggered:
-            threading.Thread(target=self._on_toggle, name="HotkeyToggle", daemon=True).start()
+        if triggered_f8:
+            threading.Thread(
+                target=self._on_toggle_recording,
+                name="HotkeyRecording",
+                daemon=True
+            ).start()
+
+        if triggered_f9:
+            threading.Thread(
+                target=self._on_toggle_sleep,
+                name="HotkeySleep",
+                daemon=True
+            ).start()
 
     def _handle_release(
         self, key: Optional[pynput_keyboard.Key | pynput_keyboard.KeyCode]
@@ -81,13 +115,15 @@ class HotkeyManager:
             try:
                 if key is None:
                     return
-                # If F9 released, allow subsequent presses to trigger again
-                if key == pynput_keyboard.Key.f9:
-                    self._state["consumed"] = False
+
+                if key == pynput_keyboard.Key.f8:
+                    self._state["f8_consumed"] = False
+                elif key == pynput_keyboard.Key.f9:
+                    self._state["f9_consumed"] = False
 
             except AttributeError:
                 pass
             except Exception as exc:
-                # NOUVEAU: Logger et forcer reset
                 print(f"[Hotkey] ERROR in release handler: {exc}")
-                self._state["consumed"] = False
+                self._state["f8_consumed"] = False
+                self._state["f9_consumed"] = False

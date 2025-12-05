@@ -67,6 +67,18 @@ def broadcast_state(ctx: AppContext, state: str) -> None:
                 pass
 
 
+def broadcast_recording(ctx: AppContext, is_recording: bool) -> None:
+    """Send recording state change to all connected SSE clients."""
+    state = "recording" if is_recording else "paused"
+    message = f"RECORDING:{state}"
+    with ctx.sse_lock:
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
 def init_routes(ctx: AppContext) -> None:
     """Initialize all API routes."""
     global _CTX

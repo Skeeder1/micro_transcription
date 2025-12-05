@@ -50,6 +50,44 @@ body {
   margin-bottom: 6px;
 }
 
+/* Recording button */
+#rec-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 2px solid #666;
+  background: #3a3a3a;
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#rec-btn:hover {
+  transform: scale(1.1);
+}
+
+#rec-btn.rec-active {
+  border-color: #ff4444;
+  background: linear-gradient(135deg, #ff4444 0%, #cc2222 100%);
+  box-shadow: 0 0 12px rgba(255, 68, 68, 0.5);
+  animation: pulse 1.5s infinite;
+}
+
+#rec-btn.rec-paused {
+  border-color: #666;
+  background: #3a3a3a;
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(255, 68, 68, 0.5); }
+  50% { box-shadow: 0 0 20px rgba(255, 68, 68, 0.8); }
+}
+
 select {
   background: #3a3a3a;
   color: #f2f2f2;

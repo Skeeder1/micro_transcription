@@ -14,9 +14,9 @@ import sounddevice as sd
 from shared import config
 from shared.context import AppContext
 from shared.hotkey import HotkeyManager
-from shared.sleep import toggle_sleep_mode
+from shared.sleep import toggle_sleep_mode, toggle_recording
 from shared.logger import init_logger, log_info, log_warn, log_error
-from api.server import broadcast_preview, start_server
+from api.server import broadcast_preview, broadcast_recording, start_server
 from ui.manager import start_visualizer, stop_visualizer
 from core.audio_capture import make_audio_callback
 from core.models import init_models
@@ -138,8 +138,12 @@ def run() -> int:
     start_visualizer(ctx)
     time.sleep(0.5)  # Laisser le temps à l'UI de se connecter au SSE
 
-    hotkey = HotkeyManager(lambda: toggle_sleep_mode(ctx))
+    hotkey = HotkeyManager(
+        on_toggle_sleep=lambda: toggle_sleep_mode(ctx),
+        on_toggle_recording=lambda: toggle_recording(ctx),
+    )
     hotkey.start()
+    log_info("⌨️  Hotkeys: F8 = Enregistrement ON/OFF | F9 = Veille ON/OFF")
 
     # Initialiser le system tray si activé et disponible
     tray_manager = None

@@ -219,6 +219,37 @@ def is_sleeping(ctx: AppContext) -> bool:
         return ctx.is_sleeping
 
 
+def toggle_recording(ctx: AppContext) -> bool:
+    """
+    Toggle microphone recording on/off.
+
+    Returns:
+        bool: New recording state (True = recording, False = paused)
+    """
+    from api.server import broadcast_recording, broadcast_preview
+
+    new_state = ctx.audio.toggle_recording()
+
+    if new_state:
+        print("\n🎤 ENREGISTREMENT ACTIVÉ (F8)")
+        broadcast_recording(ctx, True)
+        broadcast_preview(ctx, "🎤 Enregistrement actif - Parlez...")
+    else:
+        print("\n⏸️  ENREGISTREMENT EN PAUSE (F8)")
+        broadcast_recording(ctx, False)
+        broadcast_preview(ctx, "⏸️ Enregistrement en pause - F8 pour reprendre")
+        # Vider la queue audio
+        ctx.audio.clear_queue()
+
+    return new_state
+
+
+def is_recording(ctx: AppContext) -> bool:
+    """Check if microphone is currently recording."""
+    with ctx.recording_lock:
+        return ctx.is_recording
+
+
 def check_visualizer_closed(ctx: AppContext) -> None:
     if is_sleeping(ctx):
         return

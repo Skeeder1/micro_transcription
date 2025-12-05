@@ -97,6 +97,8 @@ class AudioContext:
     """
     audio_queue: queue.Queue = field(default_factory=queue.Queue)
     last_pasted: str = ""
+    is_recording: bool = True  # True = capture audio, False = ignore audio
+    recording_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def clear_queue(self) -> None:
         """Clear all pending audio blocks."""
@@ -105,6 +107,17 @@ class AudioContext:
                 self.audio_queue.get_nowait()
             except queue.Empty:
                 break
+
+    def toggle_recording(self) -> bool:
+        """Toggle recording state. Returns new state."""
+        with self.recording_lock:
+            self.is_recording = not self.is_recording
+            return self.is_recording
+
+    def set_recording(self, value: bool) -> None:
+        """Set recording state explicitly."""
+        with self.recording_lock:
+            self.is_recording = value
 
 
 @dataclass
@@ -267,6 +280,18 @@ class AppContext:
     @last_pasted.setter
     def last_pasted(self, value: str) -> None:
         self.audio.last_pasted = value
+
+    @property
+    def is_recording(self) -> bool:
+        return self.audio.is_recording
+
+    @is_recording.setter
+    def is_recording(self, value: bool) -> None:
+        self.audio.is_recording = value
+
+    @property
+    def recording_lock(self) -> threading.Lock:
+        return self.audio.recording_lock
 
     # -------------------------------------------------------------------------
     # UI properties (delegate to ui sub-context)
