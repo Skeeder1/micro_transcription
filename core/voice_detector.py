@@ -384,13 +384,23 @@ class VoiceDetector:
         Adaptive detection mode: detect speech over ambient noise.
 
         Steps:
-        1. Update reference level
-        2. Check if calibrating
-        3. Check boost factor
-        4. Silero VAD confirmation
-        5. Optional ZCR validation
+        1. Update reference level (always, for calibration)
+        2. Absolute RMS floor check (reject near-silence)
+        3. Check if calibrating
+        4. Check boost factor
+        5. Silero VAD confirmation
+        6. Optional ZCR validation
         """
+        # Always update reference level first (needed for calibration)
         self._update_reference_level(self._last_rms)
+
+        # Step 0: Absolute RMS floor - reject near-silence regardless of reference
+        # This prevents false positives when reference is calibrated very low
+        if self._last_rms < self.rms_threshold:
+            if debug:
+                print(f"[VAD] RMS={self._last_rms:.6f} < {self.rms_threshold} → SILENCE (seuil absolu)")
+            self._check_recalibration(False)
+            return False
 
         # During calibration, reject everything
         if self._is_calibrating:

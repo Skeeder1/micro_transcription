@@ -65,7 +65,7 @@ ZCR_MAX = 0.30  # Maximum (au-dessus = bruit blanc/sifflement)
 
 # Mode debug VAD - Affiche les métriques détaillées
 # True = Affiche RMS, probabilité Silero, et ZCR en temps réel
-DEBUG_VAD = False
+DEBUG_VAD = True
 
 # Détection adaptative (détecte la parole par-dessus le bruit ambiant)
 # True = Utilise un niveau de référence adaptatif (RECOMMANDÉ pour environnements bruyants)

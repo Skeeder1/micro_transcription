@@ -128,6 +128,12 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
     _print_transcription_banner()
     last_sleep_check = time.time()
 
+    # Diagnostic counters
+    diag_voice_count = 0
+    diag_silence_count = 0
+    diag_last_report = time.time()
+    DIAG_INTERVAL = 5.0  # Report every 5 seconds
+
     try:
         while True:
             # Throttled sleep checks
@@ -150,6 +156,26 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             # Detect voice activity
             is_voice = detect_activity(audio_block, ctx.voice_detector)
             phrase_detector.update(audio_block, not is_voice)
+
+            # Diagnostic: count voice/silence ratio
+            if is_voice:
+                diag_voice_count += 1
+            else:
+                diag_silence_count += 1
+
+            # Periodic diagnostic report
+            now = time.time()
+            if now - diag_last_report >= DIAG_INTERVAL:
+                total = diag_voice_count + diag_silence_count
+                voice_pct = (diag_voice_count / total * 100) if total > 0 else 0
+                delta_speech = now - ctx.last_speech_time
+                print(f"\n[DIAG] Voix: {diag_voice_count} ({voice_pct:.0f}%) | "
+                      f"Silence: {diag_silence_count} | "
+                      f"Buffer: {len(buffer._production)} blocks | "
+                      f"Depuis parole: {delta_speech:.1f}s")
+                diag_voice_count = 0
+                diag_silence_count = 0
+                diag_last_report = now
 
             if is_voice:
                 _handle_voice_activity(
