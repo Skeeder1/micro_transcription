@@ -50,8 +50,8 @@ def get_html_template(sse_port: int) -> str:
     )
 
     html_content = html_content.replace(
-        '<script type=\'module\' src="qrc:///static/js/visualizer.js"></script>',
-        f'<script type="module">\n{js_content}\n</script>'
+        '<script src="qrc:///static/js/visualizer.js"></script>',
+        f'<script>\n{js_content}\n</script>'
     )
 
     # Replace the SSE_PORT placeholder
@@ -82,6 +82,12 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         self._view.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)  # Aussi pour la webview
         settings = self._view.settings()
         settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+        # Important pour le microphone
+        settings.setAttribute(QWebEngineSettings.WebAttribute.ScreenCaptureEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
 
         # Page custom pour logs
         class DebugPage(QWebEnginePage):
@@ -108,11 +114,17 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         self._setup_qt_bridge()
 
     def _on_feature_permission_requested(self, origin: QtCore.QUrl, feature: QWebEnginePage.Feature) -> None:
-        print(f"[Permission] Feature requested: {feature}")
+        print(f"[Permission] Feature requested: {feature} from {origin}")
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
-            if feature == QWebEnginePage.Feature.MediaAudioCapture:
-                print("[Permission] Granting MediaAudioCapture")
+            # Autoriser tous les types de capture audio/vidéo
+            allowed_features = [
+                QWebEnginePage.Feature.MediaAudioCapture,
+                QWebEnginePage.Feature.MediaVideoCapture,
+                QWebEnginePage.Feature.MediaAudioVideoCapture,
+            ]
+            if feature in allowed_features:
+                print(f"[Permission] Granting {feature}")
                 self._view.page().setFeaturePermission(
                     origin,
                     feature,
