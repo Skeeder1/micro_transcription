@@ -43,6 +43,9 @@ def calculate_zcr(audio: np.ndarray) -> float:
     """
     if audio is None or len(audio) < 2:
         return 0.0
+    # Ensure 1D
+    if audio.ndim > 1:
+        audio = audio.squeeze()
     signs = np.sign(audio)
     zero_crossings = np.sum(np.abs(np.diff(signs))) / 2.0
     return float(zero_crossings / len(audio))
@@ -165,6 +168,12 @@ def estimate_pitch_autocorr(
         Estimated pitch in Hz, or None if no clear pitch detected
     """
     if audio is None or len(audio) < sample_rate // int(f0_min):
+        return None
+
+    # Ensure audio is 1D (squeeze multi-dimensional arrays)
+    if audio.ndim > 1:
+        audio = audio.squeeze()
+    if audio.ndim != 1:
         return None
 
     # Calculate lag range from frequency range
