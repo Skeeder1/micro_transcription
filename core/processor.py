@@ -40,7 +40,7 @@ def run(ctx: AppContext) -> None:
         check_auto_sleep, check_deep_sleep, check_visualizer_closed,
         is_sleeping, update_speech_timer, can_auto_wake, auto_wake
     )
-    from api.server import broadcast_preview, broadcast_vad
+    from api.server import broadcast_preview, broadcast_vad, broadcast_processing
 
     if not config.ENABLE_TRANSCRIPTION:
         _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
@@ -50,7 +50,8 @@ def run(ctx: AppContext) -> None:
         _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                                check_visualizer_closed, is_sleeping,
                                update_speech_timer, broadcast_preview,
-                               can_auto_wake, auto_wake, broadcast_vad)
+                               can_auto_wake, auto_wake, broadcast_vad,
+                               broadcast_processing)
 
 
 # =============================================================================
@@ -119,7 +120,8 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
 def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                            check_visualizer_closed, is_sleeping,
                            update_speech_timer, broadcast_preview,
-                           can_auto_wake, auto_wake, broadcast_vad):
+                           can_auto_wake, auto_wake, broadcast_vad,
+                           broadcast_processing):
     """
     Run full transcription mode with preview and production pipelines.
 
@@ -219,16 +221,17 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             if is_voice:
                 _handle_voice_activity(
                     ctx, audio_block, buffer, phrase_detector,
-                    preview_manager, update_speech_timer, broadcast_preview
+                    preview_manager, update_speech_timer, broadcast_preview,
+                    broadcast_processing
                 )
             else:
                 _handle_silence(
                     ctx, buffer, phrase_detector, production_manager,
-                    broadcast_preview
+                    broadcast_preview, broadcast_processing
                 )
 
     except KeyboardInterrupt:
-        _handle_shutdown(ctx, buffer, broadcast_preview)
+        _handle_shutdown(ctx, buffer, broadcast_preview, broadcast_processing)
 
 
 # =============================================================================
@@ -236,14 +239,15 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
 # =============================================================================
 
 def _handle_voice_activity(ctx, audio_block, buffer, phrase_detector,
-                           preview_manager, update_speech_timer, broadcast_preview):
+                           preview_manager, update_speech_timer, broadcast_preview,
+                           broadcast_processing):
     """Handle audio block when voice is detected."""
     buffer.add_voice_audio(audio_block)
     update_speech_timer(ctx)
 
     # Check for buffer overflow
     if buffer.is_production_overflow:
-        _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview)
+        _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
         return
 
     # Update preview if enabled
@@ -251,21 +255,27 @@ def _handle_voice_activity(ctx, audio_block, buffer, phrase_detector,
         _update_preview(ctx, buffer, preview_manager, broadcast_preview)
 
 
-def _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview):
+def _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
     """Handle production buffer overflow."""
     print(f"\n⚠️ Buffer limit ({getattr(config, 'MAX_PRODUCTION_SECONDS', 30)}s) - forcing transcription...")
 
     audio = buffer.get_production_audio()
     if audio is not None:
+        broadcast_processing(ctx, True)  # Signal start
         audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
 
         print("\r" + " " * 80 + "\r", end="", flush=True)
-        broadcast_preview(ctx, "")
+        broadcast_preview(ctx, "⏳ Transcription...")
 
         final_text = transcribe_production(ctx, audio)
+        broadcast_processing(ctx, False)  # Signal done
+
         if final_text:
             print(f"📋 {final_text}")
             paste_via_clipboard(ctx, final_text)
+            broadcast_preview(ctx, f"✅ {final_text}")
+        else:
+            broadcast_preview(ctx, "")
 
     buffer.clear()
     phrase_detector.reset()
@@ -290,7 +300,7 @@ def _update_preview(ctx, buffer, preview_manager, broadcast_preview):
 # Silence Handling
 # =============================================================================
 
-def _handle_silence(ctx, buffer, phrase_detector, production_manager, broadcast_preview):
+def _handle_silence(ctx, buffer, phrase_detector, production_manager, broadcast_preview, broadcast_processing):
     """Handle audio block when silence is detected."""
     if not config.ENABLE_PRODUCTION or not buffer.has_production_audio:
         return
@@ -301,24 +311,30 @@ def _handle_silence(ctx, buffer, phrase_detector, production_manager, broadcast_
     should_flush = production_manager.should_flush(buffer, phrase_detector, is_silent=True)
 
     if should_flush:
-        _flush_production(ctx, buffer, phrase_detector, broadcast_preview)
+        _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
 
 
-def _flush_production(ctx, buffer, phrase_detector, broadcast_preview):
+def _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
     """Flush production buffer and transcribe."""
     audio = buffer.get_production_audio()
     if audio is None:
         return
 
+    broadcast_processing(ctx, True)  # Signal start
     audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
 
     print("\r" + " " * 80 + "\r", end="", flush=True)
-    broadcast_preview(ctx, "")
+    broadcast_preview(ctx, "⏳ Transcription...")
 
     final_text = transcribe_production(ctx, audio)
+    broadcast_processing(ctx, False)  # Signal done
+
     if final_text:
         print(f"📋 {final_text}")
         paste_via_clipboard(ctx, final_text)
+        broadcast_preview(ctx, f"✅ {final_text}")
+    else:
+        broadcast_preview(ctx, "")
 
     buffer.clear()
     phrase_detector.reset()
@@ -349,15 +365,17 @@ def _get_audio_block(ctx):
         return None
 
 
-def _handle_shutdown(ctx, buffer, broadcast_preview):
+def _handle_shutdown(ctx, buffer, broadcast_preview, broadcast_processing):
     """Handle graceful shutdown with pending audio."""
     if config.ENABLE_PRODUCTION and buffer.has_production_audio:
         print("\r" + " " * 80 + "\r", end="", flush=True)
 
         audio = buffer.get_production_audio()
         if audio is not None:
+            broadcast_processing(ctx, True)  # Signal start
             audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
             final_text = transcribe_production(ctx, audio)
+            broadcast_processing(ctx, False)  # Signal done
             if final_text:
                 print(f"📋 {final_text}")
                 paste_via_clipboard(ctx, final_text)

@@ -50,6 +50,75 @@ body {
   margin-bottom: 6px;
 }
 
+.spacer {
+  flex: 1;
+}
+
+/* Indicators (VAD, Processing) */
+.indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: #3a3a3a;
+  border-radius: 12px;
+  font-size: 10px;
+  color: #888;
+  transition: all 0.2s;
+}
+
+.indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+  transition: all 0.2s;
+}
+
+.indicator-label {
+  text-transform: uppercase;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+/* VAD Active State */
+#vad-indicator.active {
+  background: rgba(74, 222, 128, 0.2);
+  color: #4ade80;
+}
+
+#vad-indicator.active .indicator-dot {
+  background: #4ade80;
+  box-shadow: 0 0 8px #4ade80;
+}
+
+/* Processing Active State */
+#processing-indicator.active {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fbbf24;
+}
+
+#processing-indicator.active .indicator-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #fbbf24;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+.indicator-spinner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+  transition: all 0.2s;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Recording button */
 #rec-btn {
   width: 32px;

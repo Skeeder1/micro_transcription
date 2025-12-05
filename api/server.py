@@ -83,9 +83,9 @@ def broadcast_vad(ctx: AppContext, is_voice: bool) -> None:
     """
     Send VAD (Voice Activity Detection) state to all connected SSE clients.
 
-    This is used by the frontend to color the waveform:
+    This is used by the frontend to show the VAD indicator:
     - Green when voice is detected
-    - Blue during silence
+    - Gray during silence
 
     Args:
         ctx: Application context
@@ -93,6 +93,27 @@ def broadcast_vad(ctx: AppContext, is_voice: bool) -> None:
     """
     state = "active" if is_voice else "inactive"
     message = f"VAD:{state}"
+    with ctx.sse_lock:
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
+def broadcast_processing(ctx: AppContext, is_processing: bool) -> None:
+    """
+    Send processing state to all connected SSE clients.
+
+    This is used by the frontend to show the AI processing indicator
+    when transcription is in progress.
+
+    Args:
+        ctx: Application context
+        is_processing: True if transcription is in progress
+    """
+    state = "start" if is_processing else "done"
+    message = f"PROCESSING:{state}"
     with ctx.sse_lock:
         for client in ctx.sse_clients:
             try:
