@@ -79,6 +79,28 @@ def broadcast_recording(ctx: AppContext, is_recording: bool) -> None:
                 pass
 
 
+def broadcast_vad(ctx: AppContext, is_voice: bool) -> None:
+    """
+    Send VAD (Voice Activity Detection) state to all connected SSE clients.
+
+    This is used by the frontend to color the waveform:
+    - Green when voice is detected
+    - Blue during silence
+
+    Args:
+        ctx: Application context
+        is_voice: True if voice is currently being detected
+    """
+    state = "active" if is_voice else "inactive"
+    message = f"VAD:{state}"
+    with ctx.sse_lock:
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
 def init_routes(ctx: AppContext) -> None:
     """Initialize all API routes."""
     global _CTX

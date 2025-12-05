@@ -40,17 +40,17 @@ def run(ctx: AppContext) -> None:
         check_auto_sleep, check_deep_sleep, check_visualizer_closed,
         is_sleeping, update_speech_timer, can_auto_wake, auto_wake
     )
-    from api.server import broadcast_preview
+    from api.server import broadcast_preview, broadcast_vad
 
     if not config.ENABLE_TRANSCRIPTION:
         _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                             check_visualizer_closed, is_sleeping, update_speech_timer,
-                            can_auto_wake, auto_wake)
+                            can_auto_wake, auto_wake, broadcast_vad)
     else:
         _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                                check_visualizer_closed, is_sleeping,
                                update_speech_timer, broadcast_preview,
-                               can_auto_wake, auto_wake)
+                               can_auto_wake, auto_wake, broadcast_vad)
 
 
 # =============================================================================
@@ -59,7 +59,7 @@ def run(ctx: AppContext) -> None:
 
 def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                          check_visualizer_closed, is_sleeping, update_speech_timer,
-                         can_auto_wake, auto_wake):
+                         can_auto_wake, auto_wake, broadcast_vad):
     """
     Run in visualizer-only mode (no transcription).
 
@@ -67,6 +67,7 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
     """
     _print_visualizer_banner()
     last_sleep_check = time.time()
+    was_voice = False  # Track VAD state transitions
 
     try:
         while True:
@@ -97,8 +98,14 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
             if audio_block is None:
                 continue
 
+            # Detect voice and broadcast VAD state changes
+            is_voice = detect_activity(audio_block, ctx.voice_detector)
+            if is_voice != was_voice:
+                broadcast_vad(ctx, is_voice)
+                was_voice = is_voice
+
             # Update speech timer on voice activity
-            if detect_activity(audio_block, ctx.voice_detector):
+            if is_voice:
                 update_speech_timer(ctx)
 
     except KeyboardInterrupt:
@@ -112,7 +119,7 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
 def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                            check_visualizer_closed, is_sleeping,
                            update_speech_timer, broadcast_preview,
-                           can_auto_wake, auto_wake):
+                           can_auto_wake, auto_wake, broadcast_vad):
     """
     Run full transcription mode with preview and production pipelines.
 
@@ -141,6 +148,7 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
 
     _print_transcription_banner()
     last_sleep_check = time.time()
+    was_voice = False  # Track VAD state transitions
 
     # Diagnostic counters
     diag_voice_count = 0
@@ -180,8 +188,12 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             if audio_block is None:
                 continue
 
-            # Detect voice activity
+            # Detect voice activity and broadcast VAD state changes
             is_voice = detect_activity(audio_block, ctx.voice_detector)
+            if is_voice != was_voice:
+                broadcast_vad(ctx, is_voice)
+                was_voice = is_voice
+
             phrase_detector.update(audio_block, not is_voice)
 
             # Diagnostic: count voice/silence ratio
