@@ -79,6 +79,63 @@ def broadcast_recording(ctx: AppContext, is_recording: bool) -> None:
                 pass
 
 
+def broadcast_vad(ctx: AppContext, is_detecting: bool) -> None:
+    """
+    Send VAD (Voice Activity Detection) state to all connected SSE clients.
+
+    Args:
+        ctx: Application context
+        is_detecting: True if voice is currently being detected, False otherwise
+    """
+    state = "active" if is_detecting else "inactive"
+    message = f"VAD:{state}"
+    with ctx.sse_lock:
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
+def broadcast_processing(ctx: AppContext, is_processing: bool) -> None:
+    """
+    Send processing state to all connected SSE clients.
+
+    Args:
+        ctx: Application context
+        is_processing: True if transcription is in progress, False otherwise
+    """
+    state = "start" if is_processing else "done"
+    message = f"PROCESSING:{state}"
+    with ctx.sse_lock:
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
+def broadcast_waveform(ctx: AppContext, rms: float, peak: float, is_voice: bool) -> None:
+    """
+    Send preprocessed waveform data to all connected SSE clients.
+
+    This is called ~10 times per second, so no logging to avoid spam.
+
+    Args:
+        ctx: Application context
+        rms: RMS level of preprocessed audio (0-1)
+        peak: Peak level of preprocessed audio (0-1)
+        is_voice: True if voice activity detected
+    """
+    message = f"WAVEFORM:{rms:.4f},{peak:.4f},{1 if is_voice else 0}"
+    with ctx.sse_lock:
+        for client in ctx.sse_clients:
+            try:
+                client.put_nowait(message)
+            except queue.Full:
+                pass
+
+
 def init_routes(ctx: AppContext) -> None:
     """Initialize all API routes."""
     global _CTX

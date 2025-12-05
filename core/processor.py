@@ -1,8 +1,16 @@
 """
-Main audio processing loop.
+Main audio processing loop - Nouvelle logique F8/F9.
 
-Orchestrates the audio capture, voice detection, and transcription pipeline
-using modular components for better maintainability.
+Architecture:
+- Le système démarre ACTIF (F9 pour mettre en veille)
+- Quand actif: VAD détecte la voix, accumule l'audio
+- Transcription auto après 1-2s de silence
+- F8 force la transcription immédiate
+
+États:
+- Système OFF (veille): drain queue, attendre F9
+- Système ON + Micro OFF: drain queue, attendre F8
+- Système ON + Micro ON: traitement audio actif
 """
 
 from __future__ import annotations
@@ -14,7 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from shared import config
-from .audio_capture import detect_activity, paste_via_clipboard
+from .audio_capture import detect_activity, paste_via_clipboard, compute_waveform_metrics
 from .audio_preprocessing import preprocess_audio
 from .models import transcribe_preview, transcribe_production
 from .phrase_detector import PhraseEndDetector
@@ -32,64 +40,50 @@ def run(ctx: AppContext) -> None:
     """
     Stream microphone audio, manage preview and production outputs.
 
-    This is the main entry point for the audio processing loop.
-    Handles both visualizer-only and full transcription modes.
+    Le système démarre ACTIF. L'utilisateur peut appuyer sur F9 pour mettre en veille.
     """
-    # Late imports to avoid circular dependencies
     from shared.sleep import (
-        check_auto_sleep, check_deep_sleep, check_visualizer_closed,
-        is_sleeping, update_speech_timer, can_auto_wake, auto_wake
+        check_auto_sleep, check_deep_sleep, is_sleeping, update_speech_timer
     )
-    from api.server import broadcast_preview
+    from api.server import broadcast_preview, broadcast_vad, broadcast_processing, broadcast_waveform
 
     if not config.ENABLE_TRANSCRIPTION:
-        _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
-                            check_visualizer_closed, is_sleeping, update_speech_timer,
-                            can_auto_wake, auto_wake)
+        _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep, is_sleeping,
+                            update_speech_timer, broadcast_waveform)
     else:
-        _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
-                               check_visualizer_closed, is_sleeping,
-                               update_speech_timer, broadcast_preview,
-                               can_auto_wake, auto_wake)
+        _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep, is_sleeping,
+                               update_speech_timer, broadcast_preview, broadcast_vad,
+                               broadcast_processing, broadcast_waveform)
 
 
 # =============================================================================
 # Visualizer-Only Mode
 # =============================================================================
 
-def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
-                         check_visualizer_closed, is_sleeping, update_speech_timer,
-                         can_auto_wake, auto_wake):
+def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep, is_sleeping,
+                         update_speech_timer, broadcast_waveform):
     """
     Run in visualizer-only mode (no transcription).
-
-    Simply captures audio for visualization and manages sleep state.
     """
-    _print_visualizer_banner()
+    _print_startup_banner()
     last_sleep_check = time.time()
 
     try:
         while True:
-            # Throttled sleep checks
+            # Vérifications périodiques
             if _should_check_sleep(last_sleep_check):
                 check_auto_sleep(ctx)
                 check_deep_sleep(ctx)
-                check_visualizer_closed(ctx)
                 last_sleep_check = time.time()
 
-            # Handle sleep state with potential auto-wake
+            # Si système en veille, drain et attendre
             if is_sleeping(ctx):
-                # Check if auto-wake is possible (F8 ON + auto-sleep)
-                if can_auto_wake(ctx):
-                    audio_block = _get_audio_block(ctx)
-                    if audio_block is not None:
-                        # Check for voice to trigger auto-wake
-                        if detect_activity(audio_block, ctx.voice_detector):
-                            auto_wake(ctx)
-                            continue
-                else:
-                    # F8 OFF or manual sleep - just drain queue
-                    _drain_audio_queue(ctx)
+                _drain_audio_queue(ctx)
+                continue
+
+            # Si micro désactivé, drain et attendre
+            if not ctx.is_recording:
+                _drain_audio_queue(ctx)
                 continue
 
             # Get audio block
@@ -97,8 +91,15 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
             if audio_block is None:
                 continue
 
+            # Detect voice activity
+            is_voice = detect_activity(audio_block, ctx.voice_detector)
+
+            # Compute and broadcast waveform data (preprocessed)
+            rms, peak = compute_waveform_metrics(audio_block, config.SAMPLE_RATE)
+            broadcast_waveform(ctx, rms, peak, is_voice)
+
             # Update speech timer on voice activity
-            if detect_activity(audio_block, ctx.voice_detector):
+            if is_voice:
                 update_speech_timer(ctx)
 
     except KeyboardInterrupt:
@@ -109,15 +110,15 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
 # Full Transcription Mode
 # =============================================================================
 
-def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
-                           check_visualizer_closed, is_sleeping,
-                           update_speech_timer, broadcast_preview,
-                           can_auto_wake, auto_wake):
+def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep, is_sleeping,
+                           update_speech_timer, broadcast_preview, broadcast_vad,
+                           broadcast_processing, broadcast_waveform):
     """
     Run full transcription mode with preview and production pipelines.
 
-    Uses modular components for buffer management, preview timing,
-    and production decisions.
+    Nouvelle logique:
+    - Transcription après SILENCE_BEFORE_TRANSCRIBE_SECONDS de silence
+    - Force flush via flag ctx.force_flush (quand F8 désactive le micro)
     """
     # Initialize components
     buffer = AudioBuffer(
@@ -137,52 +138,85 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
         timeout=config.PREVIEW_TIMEOUT,
     )
 
-    production_manager = ProductionManager()
-
-    _print_transcription_banner()
+    _print_startup_banner()
     last_sleep_check = time.time()
+
+    # Timer pour détecter le silence continu
+    last_voice_time = time.time()
+    was_speaking = False
 
     # Diagnostic counters
     diag_voice_count = 0
     diag_silence_count = 0
     diag_last_report = time.time()
-    DIAG_INTERVAL = 5.0  # Report every 5 seconds
+    DIAG_INTERVAL = 10.0
 
     try:
         while True:
-            # Throttled sleep checks
+            # Vérifications périodiques (1x par seconde)
             if _should_check_sleep(last_sleep_check):
                 check_auto_sleep(ctx)
                 check_deep_sleep(ctx)
-                check_visualizer_closed(ctx)
                 last_sleep_check = time.time()
 
-            # Handle sleep state with potential auto-wake
+            # =========================================================
+            # ÉTAT 1: Système en veille - drain et attendre
+            # =========================================================
             if is_sleeping(ctx):
-                # Check if auto-wake is possible (F8 ON + auto-sleep)
-                if can_auto_wake(ctx):
-                    audio_block = _get_audio_block(ctx)
-                    if audio_block is not None:
-                        # Check for voice to trigger auto-wake
-                        if detect_activity(audio_block, ctx.voice_detector):
-                            auto_wake(ctx)
-                            # Reset buffers after auto-wake
-                            buffer.clear()
-                            phrase_detector.reset()
-                            continue
-                else:
-                    # F8 OFF or manual sleep - just drain queue
-                    _drain_audio_queue(ctx)
+                _drain_audio_queue(ctx)
+                # Reset des états
+                buffer.clear()
+                phrase_detector.reset()
+                was_speaking = False
                 continue
+
+            # =========================================================
+            # ÉTAT 2: Force flush (F8 désactive le micro)
+            # =========================================================
+            if ctx.force_flush:
+                ctx.force_flush = False  # Reset le flag
+
+                if buffer.has_production_audio:
+                    print("[ForceFlush] Transcription forcée via F8...")
+                    _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
+
+                was_speaking = False
+                continue
+
+            # =========================================================
+            # ÉTAT 3: Micro désactivé - drain et attendre
+            # =========================================================
+            if not ctx.is_recording:
+                _drain_audio_queue(ctx)
+                # Reset si on vient de désactiver
+                if was_speaking:
+                    was_speaking = False
+                continue
+
+            # =========================================================
+            # ÉTAT 4: Système actif + Micro actif - traitement normal
+            # =========================================================
 
             # Get audio block
             audio_block = _get_audio_block(ctx)
             if audio_block is None:
+                # Pas d'audio, mais vérifier le silence timeout
+                if was_speaking and buffer.has_production_audio:
+                    silence_duration = time.time() - last_voice_time
+                    if silence_duration >= config.SILENCE_BEFORE_TRANSCRIBE_SECONDS:
+                        print(f"[Silence] {silence_duration:.1f}s - Transcription auto")
+                        _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
+                        was_speaking = False
+                        broadcast_vad(ctx, False)
                 continue
 
             # Detect voice activity
             is_voice = detect_activity(audio_block, ctx.voice_detector)
             phrase_detector.update(audio_block, not is_voice)
+
+            # Compute and broadcast waveform data (preprocessed)
+            rms, peak = compute_waveform_metrics(audio_block, config.SAMPLE_RATE)
+            broadcast_waveform(ctx, rms, peak, is_voice)
 
             # Diagnostic: count voice/silence ratio
             if is_voice:
@@ -204,59 +238,116 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                 diag_silence_count = 0
                 diag_last_report = now
 
+            # =========================================================
+            # Traitement de la voix détectée
+            # =========================================================
             if is_voice:
-                _handle_voice_activity(
-                    ctx, audio_block, buffer, phrase_detector,
-                    preview_manager, update_speech_timer, broadcast_preview
-                )
+                # Voix détectée - accumuler l'audio
+                buffer.add_voice_audio(audio_block)
+                update_speech_timer(ctx)
+                last_voice_time = time.time()
+
+                # Notifier l'UI si on commence à parler
+                if not was_speaking:
+                    was_speaking = True
+                    broadcast_vad(ctx, True)
+                    ctx.vad_detecting = True
+
+                # Check for buffer overflow
+                if buffer.is_production_overflow:
+                    _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
+                    was_speaking = False
+                    broadcast_vad(ctx, False)
+                    continue
+
+                # Update preview if enabled
+                if config.ENABLE_PREVIEW and preview_manager.should_update():
+                    _update_preview(ctx, buffer, preview_manager, broadcast_preview)
+
             else:
-                _handle_silence(
-                    ctx, buffer, phrase_detector, production_manager,
-                    broadcast_preview
-                )
+                # Silence détecté
+                if was_speaking:
+                    # On vient d'arrêter de parler
+                    buffer.add_silence()
+
+                    # Vérifier si le silence dépasse le seuil
+                    silence_duration = time.time() - last_voice_time
+                    if silence_duration >= config.SILENCE_BEFORE_TRANSCRIBE_SECONDS:
+                        if buffer.has_production_audio:
+                            print(f"[Silence] {silence_duration:.1f}s - Transcription auto")
+                            _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
+
+                        was_speaking = False
+                        broadcast_vad(ctx, False)
+                        ctx.vad_detecting = False
 
     except KeyboardInterrupt:
-        _handle_shutdown(ctx, buffer, broadcast_preview)
+        _handle_shutdown(ctx, buffer, broadcast_preview, broadcast_processing)
 
 
 # =============================================================================
-# Voice Activity Handling
+# Production Flush
 # =============================================================================
 
-def _handle_voice_activity(ctx, audio_block, buffer, phrase_detector,
-                           preview_manager, update_speech_timer, broadcast_preview):
-    """Handle audio block when voice is detected."""
-    buffer.add_voice_audio(audio_block)
-    update_speech_timer(ctx)
-
-    # Check for buffer overflow
-    if buffer.is_production_overflow:
-        _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview)
+def _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
+    """Flush production buffer and transcribe."""
+    audio = buffer.get_production_audio()
+    if audio is None:
         return
 
-    # Update preview if enabled
-    if config.ENABLE_PREVIEW and preview_manager.should_update():
-        _update_preview(ctx, buffer, preview_manager, broadcast_preview)
+    import time as _time
+    start_time = _time.time()
+    print(f"\n[TRANSCRIPTION] Début - {len(audio)} samples ({len(audio)/config.SAMPLE_RATE:.1f}s audio)")
 
+    try:
+        # Notifier l'UI que la transcription commence
+        broadcast_processing(ctx, True)
+        ctx.is_processing = True
+        print("[TRANSCRIPTION] PROCESSING:start envoyé")
 
-def _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview):
-    """Handle production buffer overflow."""
-    print(f"\n⚠️ Buffer limit ({getattr(config, 'MAX_PRODUCTION_SECONDS', 30)}s) - forcing transcription...")
-
-    audio = buffer.get_production_audio()
-    if audio is not None:
         audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
+        print(f"[TRANSCRIPTION] Preprocessing done - {_time.time() - start_time:.2f}s")
 
         print("\r" + " " * 80 + "\r", end="", flush=True)
-        broadcast_preview(ctx, "")
+        broadcast_preview(ctx, "⏳ Transcription en cours...")
 
+        print("[TRANSCRIPTION] Appel Whisper...")
+        whisper_start = _time.time()
         final_text = transcribe_production(ctx, audio)
+        whisper_duration = _time.time() - whisper_start
+        print(f"[TRANSCRIPTION] Whisper terminé en {whisper_duration:.2f}s")
+
         if final_text:
             print(f"📋 {final_text}")
             paste_via_clipboard(ctx, final_text)
+            broadcast_preview(ctx, f"✅ {final_text}")
+        else:
+            print("[TRANSCRIPTION] Pas de texte détecté")
+            broadcast_preview(ctx, "🎤 En attente de parole...")
 
-    buffer.clear()
-    phrase_detector.reset()
+    except Exception as exc:
+        print(f"[ERROR] Transcription failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        broadcast_preview(ctx, f"❌ Erreur: {str(exc)[:50]}")
+
+    finally:
+        # TOUJOURS notifier l'UI que la transcription est terminée
+        try:
+            broadcast_processing(ctx, False)
+            ctx.is_processing = False
+            print(f"[TRANSCRIPTION] PROCESSING:done envoyé - Total: {_time.time() - start_time:.2f}s")
+        except Exception as e:
+            print(f"[ERROR] Failed to send PROCESSING:done: {e}")
+
+        buffer.clear()
+        phrase_detector.reset()
+
+
+def _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
+    """Handle production buffer overflow."""
+    print(f"\n⚠️ Buffer limit ({getattr(config, 'MAX_PRODUCTION_SECONDS', 30)}s) - forcing transcription...")
+    _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
 
 
 def _update_preview(ctx, buffer, preview_manager, broadcast_preview):
@@ -272,44 +363,6 @@ def _update_preview(ctx, buffer, preview_manager, broadcast_preview):
 
     if preview_text:
         print(f"\r💬 {preview_text}", end="", flush=True)
-
-
-# =============================================================================
-# Silence Handling
-# =============================================================================
-
-def _handle_silence(ctx, buffer, phrase_detector, production_manager, broadcast_preview):
-    """Handle audio block when silence is detected."""
-    if not config.ENABLE_PRODUCTION or not buffer.has_production_audio:
-        return
-
-    buffer.add_silence()
-
-    # Check if we should flush production
-    should_flush = production_manager.should_flush(buffer, phrase_detector, is_silent=True)
-
-    if should_flush:
-        _flush_production(ctx, buffer, phrase_detector, broadcast_preview)
-
-
-def _flush_production(ctx, buffer, phrase_detector, broadcast_preview):
-    """Flush production buffer and transcribe."""
-    audio = buffer.get_production_audio()
-    if audio is None:
-        return
-
-    audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
-
-    print("\r" + " " * 80 + "\r", end="", flush=True)
-    broadcast_preview(ctx, "")
-
-    final_text = transcribe_production(ctx, audio)
-    if final_text:
-        print(f"📋 {final_text}")
-        paste_via_clipboard(ctx, final_text)
-
-    buffer.clear()
-    phrase_detector.reset()
 
 
 # =============================================================================
@@ -337,18 +390,27 @@ def _get_audio_block(ctx):
         return None
 
 
-def _handle_shutdown(ctx, buffer, broadcast_preview):
+def _handle_shutdown(ctx, buffer, broadcast_preview, broadcast_processing):
     """Handle graceful shutdown with pending audio."""
     if config.ENABLE_PRODUCTION and buffer.has_production_audio:
         print("\r" + " " * 80 + "\r", end="", flush=True)
 
         audio = buffer.get_production_audio()
         if audio is not None:
-            audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
-            final_text = transcribe_production(ctx, audio)
-            if final_text:
-                print(f"📋 {final_text}")
-                paste_via_clipboard(ctx, final_text)
+            try:
+                broadcast_processing(ctx, True)
+                audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
+                final_text = transcribe_production(ctx, audio)
+                if final_text:
+                    print(f"📋 {final_text}")
+                    paste_via_clipboard(ctx, final_text)
+            except Exception as exc:
+                print(f"[ERROR] Shutdown transcription failed: {exc}")
+            finally:
+                try:
+                    broadcast_processing(ctx, False)
+                except Exception:
+                    pass
 
     print("\n👋 Arrêt...")
 
@@ -357,26 +419,15 @@ def _handle_shutdown(ctx, buffer, broadcast_preview):
 # Banner Messages
 # =============================================================================
 
-def _print_visualizer_banner():
-    """Print startup banner for visualizer-only mode."""
-    print("🎙️ Visualiseur d'ondes actif... (Ctrl+C pour quitter)")
-    print("   🌊 Mode visualisation uniquement (transcription désactivée)")
-    print("   🎤 F8 → Pause/Reprendre enregistrement")
-    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Basculer veille manuelle")
-    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s (auto-réveil si voix)")
-
-
-def _print_transcription_banner():
-    """Print startup banner for transcription mode."""
-    if config.ENABLE_PREVIEW:
-        print("🎙️ Écoute active... (Ctrl+C pour quitter)")
-        print("   💬 Preview → Visualiseur (temps réel)")
-        print("   📋 Production → Curseur (modèle large)")
-    else:
-        print("🎙️ Transcription directe active... (Ctrl+C pour quitter)")
-        print("   📋 Modèle LARGE → Transcription directe au curseur")
-        print("   🚫 Pas de prévisualisation (mode performance)")
-
-    print("   🎤 F8 → Pause/Reprendre enregistrement")
-    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Basculer veille manuelle")
-    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s (auto-réveil si voix)")
+def _print_startup_banner():
+    """Print startup banner."""
+    print("\n" + "=" * 60)
+    print("🎤 SYSTÈME DE DICTÉE VOCALE")
+    print("=" * 60)
+    print("   🔊 Système ACTIF par défaut")
+    print("   ⌨️  F9 → Activer/Désactiver le système")
+    print("   🎤 F8 → Pause/Reprendre micro (force transcription)")
+    print(f"   ⏱️  Transcription auto après {config.SILENCE_BEFORE_TRANSCRIBE_SECONDS}s de silence")
+    print(f"   💤 Veille auto après {config.AUTO_SLEEP_SECONDS}s d'inactivité")
+    print("=" * 60 + "\n")
+    print("   Parlez maintenant...")
