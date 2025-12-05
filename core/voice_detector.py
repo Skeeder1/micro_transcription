@@ -1,4 +1,5 @@
-"""Advanced voice activity detection combining Silero VAD and Zero Crossing Rate.
+"""
+Advanced voice activity detection combining Silero VAD and Zero Crossing Rate.
 
 This module provides human speech detection that distinguishes voice from ambient noise,
 improving transcription accuracy and end-of-speech detection.
@@ -7,10 +8,32 @@ improving transcription accuracy and end-of-speech detection.
 from __future__ import annotations
 
 import os
-from typing import Optional
+import time
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
+
+from shared.audio_utils import calculate_rms, calculate_zcr
+from shared.exceptions import ModelLoadError
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# Calibration settings
+CALIBRATION_CHUNKS = 4  # Number of chunks for initial calibration (~2s at 0.5s/chunk)
+RECALIBRATION_SILENCE_THRESHOLD = 30.0  # Recalibrate after 30s of silence
+
+# Silero VAD requirements
+SILERO_SAMPLES_16K = 512  # Required samples for 16kHz
+SILERO_SAMPLES_8K = 256   # Required samples for 8kHz
+SILERO_HOP_RATIO = 0.5    # 50% overlap for sliding window
+
+# Adaptive detection
+REFERENCE_UPDATE_ALPHA = 0.05  # EMA alpha for reference level (5% new, 95% old)
+AMBIENT_FACTOR_MARGIN = 0.7   # Margin for ambient vs speech classification
 
 
 class VoiceDetector:
@@ -79,13 +102,16 @@ class VoiceDetector:
         self._reference_rms: float = self.rms_threshold
         self._is_calibrating: bool = True
         self._calibration_count: int = 0
-        # Calibration: collect ~4 chunks (2 seconds at 0.5s per chunk)
-        self._max_calibration_count: int = 4
+        self._max_calibration_count: int = CALIBRATION_CHUNKS
 
         # Recalibration state
         self._seconds_since_last_speech: float = 0.0
         self._last_update_time: float = 0.0
-        self._recalibration_threshold: float = 30.0  # Recalibrate after 30s of silence
+        self._recalibration_threshold: float = RECALIBRATION_SILENCE_THRESHOLD
+
+    # =========================================================================
+    # Model Management
+    # =========================================================================
 
     def _load_model(self) -> None:
         """Load Silero VAD model (lazy initialization)."""
@@ -93,11 +119,11 @@ class VoiceDetector:
             return
 
         try:
-            # Load Silero VAD v4.0 from torch hub
-            # Model is ~1MB, downloads automatically on first run
-            torch.hub.set_dir(os.path.join(os.path.dirname(__file__), "..", ".cache", "torch"))
+            torch.hub.set_dir(
+                os.path.join(os.path.dirname(__file__), "..", ".cache", "torch")
+            )
 
-            model, utils = torch.hub.load(
+            model, _ = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
                 force_reload=False,
@@ -106,20 +132,41 @@ class VoiceDetector:
 
             self._model = model
             self._model_loaded = True
-
-            # Set model to eval mode
             self._model.eval()
 
-            print(f"✅ Silero VAD chargé (sample_rate={self.sample_rate}, threshold={self.silero_threshold})")
+            print(
+                f"✅ Silero VAD chargé "
+                f"(sample_rate={self.sample_rate}, threshold={self.silero_threshold})"
+            )
 
         except Exception as e:
             print(f"⚠️ Échec chargement Silero VAD: {e}")
             print("   → Mode dégradé: utilisation RMS uniquement")
             self._model_loaded = False
 
+    def unload_model(self) -> None:
+        """Unload Silero VAD model to free memory."""
+        if self._model is not None:
+            del self._model
+            self._model = None
+            self._model_loaded = False
+            print("🗑️ Silero VAD déchargé")
+
+    # =========================================================================
+    # Audio Analysis (using shared utilities)
+    # =========================================================================
+
     def _calculate_rms(self, audio: np.ndarray) -> float:
-        """Calculate RMS (Root Mean Square) energy."""
-        return float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
+        """Calculate RMS energy (delegating to shared utility)."""
+        return calculate_rms(audio)
+
+    def _calculate_zcr(self, audio: np.ndarray) -> float:
+        """Calculate Zero Crossing Rate (delegating to shared utility)."""
+        return calculate_zcr(audio)
+
+    # =========================================================================
+    # Adaptive Detection Helpers
+    # =========================================================================
 
     def _update_reference_level(self, current_rms: float) -> None:
         """
@@ -136,126 +183,61 @@ class VoiceDetector:
             self._calibration_count += 1
 
             if self._calibration_count >= self._max_calibration_count:
-                # End calibration: compute initial reference
-                if self._rms_history:
-                    self._reference_rms = float(np.median(self._rms_history))
-                    # Ensure minimum threshold
-                    self._reference_rms = max(self._reference_rms, self.rms_threshold)
-                self._is_calibrating = False
-                print(f"🎯 Calibration terminée: niveau ambiant = {self._reference_rms:.6f}")
+                self._complete_calibration()
             return
 
-        # Normal operation: exponential moving average
-        # Only update with "quiet" samples (not speech)
-        # If current level is close to reference, it's likely ambient noise
-        if current_rms < self._reference_rms * (self.adaptive_boost_factor * 0.7):
-            # Slow adaptation (alpha = 0.05 means 5% new, 95% old)
-            alpha = 0.05
-            self._reference_rms = alpha * current_rms + (1 - alpha) * self._reference_rms
-            # Ensure minimum threshold
+        # Normal operation: EMA update with quiet samples only
+        if current_rms < self._reference_rms * (self.adaptive_boost_factor * AMBIENT_FACTOR_MARGIN):
+            self._reference_rms = (
+                REFERENCE_UPDATE_ALPHA * current_rms +
+                (1 - REFERENCE_UPDATE_ALPHA) * self._reference_rms
+            )
             self._reference_rms = max(self._reference_rms, self.rms_threshold)
 
-    def _get_boost_factor(self, current_rms: float) -> float:
-        """
-        Calculate how much louder current audio is vs ambient.
+    def _complete_calibration(self) -> None:
+        """Complete calibration phase and set initial reference level."""
+        if self._rms_history:
+            self._reference_rms = float(np.median(self._rms_history))
+            self._reference_rms = max(self._reference_rms, self.rms_threshold)
+        self._is_calibrating = False
+        print(f"🎯 Calibration terminée: niveau ambiant = {self._reference_rms:.6f}")
 
-        Returns:
-            Boost factor (1.0 = same as ambient, 3.0 = 3x louder)
-        """
+    def _get_boost_factor(self, current_rms: float) -> float:
+        """Calculate how much louder current audio is vs ambient."""
         if self._reference_rms < 1e-10:
             return 0.0
         return current_rms / self._reference_rms
 
-    def _calculate_zcr(self, audio: np.ndarray) -> float:
-        """
-        Calculate Zero Crossing Rate.
-
-        ZCR is the rate at which the signal changes sign.
-        - Low ZCR: monotonous sound (hum, DC offset)
-        - Medium ZCR: voice (typical human speech)
-        - High ZCR: white noise, hiss
-
-        Returns:
-            ZCR normalized by signal length (0.0-1.0)
-        """
-        if len(audio) < 2:
-            return 0.0
-
-        # Count sign changes
-        signs = np.sign(audio)
-        zero_crossings = np.sum(np.abs(np.diff(signs))) / 2.0
-
-        # Normalize by length
-        return float(zero_crossings / len(audio))
+    # =========================================================================
+    # Silero VAD
+    # =========================================================================
 
     def _get_silero_probability(self, audio: np.ndarray) -> float:
-        """
-        Get voice probability from Silero VAD.
-
-        Silero VAD requires EXACTLY:
-        - 512 samples for 16kHz sample rate
-        - 256 samples for 8kHz sample rate
-
-        Args:
-            audio: Audio chunk (float32, 16kHz recommended)
-
-        Returns:
-            Probability of voice (0.0-1.0)
-        """
+        """Get voice probability from Silero VAD (single window)."""
         if self._model is None:
             return 0.0
 
         try:
-            # Silero requires exact chunk sizes
-            required_samples = 512 if self.sample_rate == 16000 else 256
+            required_samples = SILERO_SAMPLES_16K if self.sample_rate == 16000 else SILERO_SAMPLES_8K
+            audio = self._prepare_audio_for_silero(audio, required_samples)
 
-            # Ensure audio is 1D
-            if audio.ndim > 1:
-                audio = audio.squeeze()
-
-            # Resample/pad/trim to required size
-            if len(audio) < required_samples:
-                # Pad with zeros if too short
-                audio = np.pad(audio, (0, required_samples - len(audio)), mode='constant')
-            elif len(audio) > required_samples:
-                # Use multiple windows and average probabilities
-                num_windows = len(audio) // required_samples
-                probabilities = []
-
-                for i in range(num_windows):
-                    start = i * required_samples
-                    end = start + required_samples
-                    chunk = audio[start:end]
-
-                    audio_tensor = torch.from_numpy(chunk).float()
-
-                    with torch.no_grad():
-                        prob = self._model(audio_tensor, self.sample_rate).item()
-                        probabilities.append(prob)
-
-                # Return maximum probability (most likely voice segment)
-                return float(max(probabilities)) if probabilities else 0.0
-            else:
-                # Exact size - perfect
+            if len(audio) == required_samples:
                 audio_tensor = torch.from_numpy(audio).float()
-
                 with torch.no_grad():
-                    probability = self._model(audio_tensor, self.sample_rate).item()
+                    return float(self._model(audio_tensor, self.sample_rate).item())
 
-                return float(probability)
+            # Multiple windows - return max probability
+            return self._process_multiple_windows(audio, required_samples)
 
         except Exception as e:
             print(f"⚠️ Erreur Silero VAD: {e}")
             return 0.0
 
-    def _get_silero_probability_voting(self, audio: np.ndarray) -> tuple[float, bool]:
+    def _get_silero_probability_voting(self, audio: np.ndarray) -> Tuple[float, bool]:
         """
         Get voice probability using sliding window with majority voting.
 
         More robust than simple MAX - reduces false positives from noise spikes.
-
-        Args:
-            audio: Audio chunk (numpy array, float32)
 
         Returns:
             Tuple of (average probability, is_voice based on voting)
@@ -264,34 +246,23 @@ class VoiceDetector:
             return 0.0, False
 
         try:
-            required_samples = 512 if self.sample_rate == 16000 else 256
-            hop_size = required_samples // 2  # 50% overlap
+            required_samples = SILERO_SAMPLES_16K if self.sample_rate == 16000 else SILERO_SAMPLES_8K
+            hop_size = int(required_samples * SILERO_HOP_RATIO)
 
-            if audio.ndim > 1:
-                audio = audio.squeeze()
+            audio = self._prepare_audio_for_silero(audio, required_samples)
 
             if len(audio) < required_samples:
-                audio = np.pad(audio, (0, required_samples - len(audio)), mode='constant')
                 prob = self._model(torch.from_numpy(audio).float(), self.sample_rate).item()
                 return prob, prob > self.silero_threshold
 
-            # Analyze with sliding windows
-            probabilities = []
-            votes = []
-
-            for start in range(0, len(audio) - required_samples + 1, hop_size):
-                chunk = audio[start:start + required_samples]
-                audio_tensor = torch.from_numpy(chunk).float()
-
-                with torch.no_grad():
-                    prob = self._model(audio_tensor, self.sample_rate).item()
-                    probabilities.append(prob)
-                    votes.append(prob > self.silero_threshold)
+            # Sliding window analysis
+            probabilities, votes = self._analyze_sliding_windows(
+                audio, required_samples, hop_size
+            )
 
             if not probabilities:
                 return 0.0, False
 
-            # Majority voting: >50% of windows must detect voice
             avg_prob = float(np.mean(probabilities))
             vote_ratio = sum(votes) / len(votes)
             is_voice = vote_ratio > 0.5
@@ -302,25 +273,94 @@ class VoiceDetector:
             print(f"⚠️ Erreur Silero VAD voting: {e}")
             return 0.0, False
 
-    def is_human_speech(
+    def _prepare_audio_for_silero(
+        self, audio: np.ndarray, required_samples: int
+    ) -> np.ndarray:
+        """Prepare audio array for Silero VAD input."""
+        if audio.ndim > 1:
+            audio = audio.squeeze()
+
+        if len(audio) < required_samples:
+            audio = np.pad(audio, (0, required_samples - len(audio)), mode='constant')
+
+        return audio
+
+    def _process_multiple_windows(
+        self, audio: np.ndarray, required_samples: int
+    ) -> float:
+        """Process audio with multiple non-overlapping windows."""
+        num_windows = len(audio) // required_samples
+        probabilities = []
+
+        for i in range(num_windows):
+            start = i * required_samples
+            chunk = audio[start:start + required_samples]
+            audio_tensor = torch.from_numpy(chunk).float()
+
+            with torch.no_grad():
+                prob = self._model(audio_tensor, self.sample_rate).item()
+                probabilities.append(prob)
+
+        return float(max(probabilities)) if probabilities else 0.0
+
+    def _analyze_sliding_windows(
         self,
         audio: np.ndarray,
-        debug: bool = False
-    ) -> bool:
+        window_size: int,
+        hop_size: int
+    ) -> Tuple[list, list]:
+        """Analyze audio with sliding windows for voting."""
+        probabilities = []
+        votes = []
+
+        for start in range(0, len(audio) - window_size + 1, hop_size):
+            chunk = audio[start:start + window_size]
+            audio_tensor = torch.from_numpy(chunk).float()
+
+            with torch.no_grad():
+                prob = self._model(audio_tensor, self.sample_rate).item()
+                probabilities.append(prob)
+                votes.append(prob > self.silero_threshold)
+
+        return probabilities, votes
+
+    # =========================================================================
+    # Recalibration
+    # =========================================================================
+
+    def _check_recalibration(self, is_speech: bool) -> None:
+        """Check if recalibration is needed and trigger it if necessary."""
+        current_time = time.time()
+
+        if self._last_update_time == 0:
+            self._last_update_time = current_time
+            return
+
+        elapsed = current_time - self._last_update_time
+        self._last_update_time = current_time
+
+        if is_speech:
+            self._seconds_since_last_speech = 0.0
+        else:
+            self._seconds_since_last_speech += elapsed
+            if self._seconds_since_last_speech >= self._recalibration_threshold:
+                self._trigger_recalibration()
+
+    def _trigger_recalibration(self) -> None:
+        """Reset calibration state to recalibrate ambient noise level."""
+        self._is_calibrating = True
+        self._calibration_count = 0
+        self._rms_history.clear()
+        self._seconds_since_last_speech = 0.0
+        print("🔄 Recalibration automatique du bruit ambiant...")
+
+    # =========================================================================
+    # Main Detection Logic (refactored into sub-methods)
+    # =========================================================================
+
+    def is_human_speech(self, audio: np.ndarray, debug: bool = False) -> bool:
         """
         Detect if audio contains human speech vs ambient noise.
-
-        Pipeline (Adaptive Mode):
-        1. Calculate current RMS
-        2. Update reference level (ambient baseline)
-        3. Check boost factor (current vs reference)
-        4. Silero VAD → confirm it's voice
-        5. Optional ZCR → filter white noise
-
-        Pipeline (Legacy Mode):
-        1. RMS check → reject pure silence
-        2. Silero VAD → get ML probability
-        3. ZCR check → validate not white noise
 
         Args:
             audio: Audio chunk (numpy array, float32)
@@ -329,101 +369,163 @@ class VoiceDetector:
         Returns:
             True if human speech detected, False if silence or ambient noise
         """
-        # Ensure model is loaded
         if not self._model_loaded:
             self._load_model()
 
-        # Calculate RMS
         self._last_rms = self._calculate_rms(audio)
 
-        # ADAPTIVE MODE: Detect speech over ambient noise
         if self.use_adaptive:
-            # Update reference level with current sample
-            self._update_reference_level(self._last_rms)
-
-            # During calibration, reject everything
-            if self._is_calibrating:
-                if debug:
-                    remaining = self._max_calibration_count - self._calibration_count
-                    print(f"[VAD] CALIBRATION: {remaining} chunks restants...")
-                return False
-
-            # Calculate boost factor
-            self._last_boost = self._get_boost_factor(self._last_rms)
-
-            # Step 1: Check if energy boost is significant
-            if self._last_boost < self.adaptive_boost_factor:
-                if debug:
-                    print(f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x < {self.adaptive_boost_factor}x → AMBIANT")
-                return False
-
-            # Step 2: Silero VAD confirmation with voting (is it really voice?)
-            if self._model is not None:
-                self._last_silero_prob, is_voice_by_voting = self._get_silero_probability_voting(audio)
-
-                if not is_voice_by_voting:
-                    if debug:
-                        print(f"[VAD] BOOST={self._last_boost:.2f}x OK, mais Silero vote={self._last_silero_prob:.3f} → BRUIT")
-                    self._check_recalibration(False)
-                    return False
-            else:
-                # No Silero, use boost factor only
-                if debug:
-                    print(f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x → VOIX")
-                return True
-
-            # Step 3: Optional ZCR validation
-            if self.use_zcr_filter:
-                self._last_zcr = self._calculate_zcr(audio)
-
-                if not (self.zcr_min <= self._last_zcr <= self.zcr_max):
-                    if debug:
-                        print(f"[VAD] BOOST OK, Silero OK, mais ZCR={self._last_zcr:.4f} hors limites → BRUIT")
-                    return False
-
-            # All checks passed
-            if debug:
-                print(f"[VAD] ✓ VOIX: REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x Silero={self._last_silero_prob:.3f}")
-
-            self._check_recalibration(True)
-            return True
-
-        # LEGACY MODE: Simple thresholds
+            return self._detect_adaptive(audio, debug)
         else:
-            # Step 1: Fast RMS pre-filter
-            if self._last_rms < self.rms_threshold:
-                if debug:
-                    print(f"[VAD] RMS={self._last_rms:.6f} < {self.rms_threshold} → SILENCE")
-                return False
+            return self._detect_legacy(audio, debug)
 
-            # Step 2: Silero VAD
-            if self._model is not None:
-                self._last_silero_prob = self._get_silero_probability(audio)
+    def _detect_adaptive(self, audio: np.ndarray, debug: bool) -> bool:
+        """
+        Adaptive detection mode: detect speech over ambient noise.
 
-                if self._last_silero_prob < self.silero_threshold:
-                    if debug:
-                        print(f"[VAD] Silero={self._last_silero_prob:.3f} < {self.silero_threshold} → NOISE")
-                    return False
-            else:
-                if debug:
-                    print(f"[VAD] Silero indisponible, RMS={self._last_rms:.6f} → ACTIVE")
-                return True
+        Steps:
+        1. Update reference level
+        2. Check if calibrating
+        3. Check boost factor
+        4. Silero VAD confirmation
+        5. Optional ZCR validation
+        """
+        self._update_reference_level(self._last_rms)
 
-            # Step 3: Optional ZCR
-            if self.use_zcr_filter:
-                self._last_zcr = self._calculate_zcr(audio)
-
-                if not (self.zcr_min <= self._last_zcr <= self.zcr_max):
-                    if debug:
-                        print(f"[VAD] ZCR={self._last_zcr:.4f} hors limites → NOISE")
-                    return False
-
-            # All checks passed
+        # During calibration, reject everything
+        if self._is_calibrating:
             if debug:
-                print(f"[VAD] ✓ VOIX: RMS={self._last_rms:.6f}, Silero={self._last_silero_prob:.3f}, ZCR={self._last_zcr:.4f}")
+                remaining = self._max_calibration_count - self._calibration_count
+                print(f"[VAD] CALIBRATION: {remaining} chunks restants...")
+            return False
 
-            self._check_recalibration(True)
+        # Step 1: Check energy boost
+        self._last_boost = self._get_boost_factor(self._last_rms)
+        if not self._check_boost_threshold(debug):
+            return False
+
+        # Step 2: Silero VAD confirmation
+        if not self._check_silero_adaptive(audio, debug):
+            return False
+
+        # Step 3: ZCR validation
+        if not self._check_zcr_filter(audio, debug):
+            return False
+
+        # All checks passed
+        if debug:
+            print(
+                f"[VAD] ✓ VOIX: REF={self._reference_rms:.6f} "
+                f"NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x "
+                f"Silero={self._last_silero_prob:.3f}"
+            )
+
+        self._check_recalibration(True)
+        return True
+
+    def _detect_legacy(self, audio: np.ndarray, debug: bool) -> bool:
+        """
+        Legacy detection mode: simple thresholds.
+
+        Steps:
+        1. RMS pre-filter
+        2. Silero VAD
+        3. Optional ZCR validation
+        """
+        # Step 1: RMS pre-filter
+        if self._last_rms < self.rms_threshold:
+            if debug:
+                print(f"[VAD] RMS={self._last_rms:.6f} < {self.rms_threshold} → SILENCE")
+            return False
+
+        # Step 2: Silero VAD
+        if not self._check_silero_legacy(audio, debug):
+            return False
+
+        # Step 3: ZCR validation
+        if not self._check_zcr_filter(audio, debug):
+            return False
+
+        # All checks passed
+        if debug:
+            print(
+                f"[VAD] ✓ VOIX: RMS={self._last_rms:.6f}, "
+                f"Silero={self._last_silero_prob:.3f}, ZCR={self._last_zcr:.4f}"
+            )
+
+        self._check_recalibration(True)
+        return True
+
+    def _check_boost_threshold(self, debug: bool) -> bool:
+        """Check if energy boost meets threshold (adaptive mode)."""
+        if self._last_boost < self.adaptive_boost_factor:
+            if debug:
+                print(
+                    f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} "
+                    f"BOOST={self._last_boost:.2f}x < {self.adaptive_boost_factor}x → AMBIANT"
+                )
+            return False
+        return True
+
+    def _check_silero_adaptive(self, audio: np.ndarray, debug: bool) -> bool:
+        """Check Silero VAD with voting (adaptive mode)."""
+        if self._model is None:
+            if debug:
+                print(
+                    f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} "
+                    f"BOOST={self._last_boost:.2f}x → VOIX"
+                )
             return True
+
+        self._last_silero_prob, is_voice = self._get_silero_probability_voting(audio)
+
+        if not is_voice:
+            if debug:
+                print(
+                    f"[VAD] BOOST={self._last_boost:.2f}x OK, "
+                    f"mais Silero vote={self._last_silero_prob:.3f} → BRUIT"
+                )
+            self._check_recalibration(False)
+            return False
+
+        return True
+
+    def _check_silero_legacy(self, audio: np.ndarray, debug: bool) -> bool:
+        """Check Silero VAD with simple threshold (legacy mode)."""
+        if self._model is None:
+            if debug:
+                print(f"[VAD] Silero indisponible, RMS={self._last_rms:.6f} → ACTIVE")
+            return True
+
+        self._last_silero_prob = self._get_silero_probability(audio)
+
+        if self._last_silero_prob < self.silero_threshold:
+            if debug:
+                print(
+                    f"[VAD] Silero={self._last_silero_prob:.3f} "
+                    f"< {self.silero_threshold} → NOISE"
+                )
+            return False
+
+        return True
+
+    def _check_zcr_filter(self, audio: np.ndarray, debug: bool) -> bool:
+        """Check ZCR is within voice range."""
+        if not self.use_zcr_filter:
+            return True
+
+        self._last_zcr = self._calculate_zcr(audio)
+
+        if not (self.zcr_min <= self._last_zcr <= self.zcr_max):
+            if debug:
+                print(f"[VAD] ZCR={self._last_zcr:.4f} hors limites → BRUIT")
+            return False
+
+        return True
+
+    # =========================================================================
+    # Metrics
+    # =========================================================================
 
     def get_metrics(self) -> dict[str, float]:
         """
@@ -441,47 +543,3 @@ class VoiceDetector:
             "is_calibrating": 1.0 if self._is_calibrating else 0.0,
             "seconds_since_speech": self._seconds_since_last_speech,
         }
-
-    def _check_recalibration(self, is_speech: bool) -> None:
-        """
-        Check if recalibration is needed and trigger it if so.
-
-        Automatically recalibrates the ambient noise level after
-        extended periods of silence (e.g., environment changed).
-        """
-        import time
-        current_time = time.time()
-
-        if self._last_update_time == 0:
-            self._last_update_time = current_time
-            return
-
-        elapsed = current_time - self._last_update_time
-        self._last_update_time = current_time
-
-        if is_speech:
-            # Reset silence counter on speech
-            self._seconds_since_last_speech = 0.0
-        else:
-            # Accumulate silence time
-            self._seconds_since_last_speech += elapsed
-
-            # Check if recalibration needed
-            if self._seconds_since_last_speech >= self._recalibration_threshold:
-                self._trigger_recalibration()
-
-    def _trigger_recalibration(self) -> None:
-        """Reset calibration state to recalibrate ambient noise level."""
-        self._is_calibrating = True
-        self._calibration_count = 0
-        self._rms_history.clear()
-        self._seconds_since_last_speech = 0.0
-        print("🔄 Recalibration automatique du bruit ambiant...")
-
-    def unload_model(self) -> None:
-        """Unload Silero VAD model to free memory."""
-        if self._model is not None:
-            del self._model
-            self._model = None
-            self._model_loaded = False
-            print("🗑️ Silero VAD déchargé")

@@ -1,4 +1,5 @@
-"""Intelligent phrase end detection for better transcription segmentation.
+"""
+Intelligent phrase end detection for better transcription segmentation.
 
 This module detects natural phrase boundaries by combining:
 1. Silence detection (pause in speech)
@@ -9,11 +10,31 @@ This module detects natural phrase boundaries by combining:
 from __future__ import annotations
 
 from collections import deque
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import numpy as np
 
 from shared import config
+from shared.audio_utils import calculate_rms, calculate_zcr, estimate_pitch_autocorr
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+# Pitch detection parameters
+PITCH_F0_MIN = 70.0   # Minimum fundamental frequency (Hz) - covers male voices
+PITCH_F0_MAX = 400.0  # Maximum fundamental frequency (Hz) - covers female voices
+PITCH_DROP_THRESHOLD = 0.15  # 15% drop indicates falling intonation
+
+# Energy analysis
+MIN_AUDIO_SAMPLES_FOR_PITCH = 512  # Minimum samples needed for pitch detection
+ENERGY_EPSILON = 1e-10  # Minimum energy to avoid division by zero
+
+# Phrase end detection thresholds
+SILENCE_BLOCKS_DEFINITE = 3  # Definite phrase end after this many silent blocks
+SILENCE_BLOCKS_WITH_ENERGY = 2  # Phrase end with energy drop
+SILENCE_BLOCKS_WITH_PITCH = 1  # Phrase end with energy + pitch drop
 
 
 class PhraseEndDetector:
@@ -53,6 +74,10 @@ class PhraseEndDetector:
         self._speech_started: bool = False
         self._silence_count: int = 0
 
+    # =========================================================================
+    # State Management
+    # =========================================================================
+
     def reset(self) -> None:
         """Reset detector state for new utterance."""
         self._energy_history.clear()
@@ -62,17 +87,17 @@ class PhraseEndDetector:
         self._speech_started = False
         self._silence_count = 0
 
+    # =========================================================================
+    # Audio Analysis (using shared utilities)
+    # =========================================================================
+
     def _calculate_rms(self, audio: np.ndarray) -> float:
-        """Calculate RMS energy of audio block."""
-        return float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
+        """Calculate RMS energy (delegating to shared utility)."""
+        return calculate_rms(audio)
 
     def _calculate_zcr(self, audio: np.ndarray) -> float:
-        """Calculate Zero Crossing Rate."""
-        if len(audio) < 2:
-            return 0.0
-        signs = np.sign(audio)
-        zero_crossings = np.sum(np.abs(np.diff(signs))) / 2.0
-        return float(zero_crossings / len(audio))
+        """Calculate Zero Crossing Rate (delegating to shared utility)."""
+        return calculate_zcr(audio)
 
     def _estimate_pitch(self, audio: np.ndarray) -> Optional[float]:
         """
@@ -81,36 +106,19 @@ class PhraseEndDetector:
         Returns:
             Estimated F0 in Hz, or None if no clear pitch detected
         """
-        if len(audio) < 512:
+        if len(audio) < MIN_AUDIO_SAMPLES_FOR_PITCH:
             return None
 
-        # Autocorrelation
-        audio_centered = audio - np.mean(audio)
-        corr = np.correlate(audio_centered, audio_centered, mode='full')
-        corr = corr[len(corr) // 2:]
+        return estimate_pitch_autocorr(
+            audio,
+            self.sample_rate,
+            f0_min=PITCH_F0_MIN,
+            f0_max=PITCH_F0_MAX
+        )
 
-        # Find first peak after initial dip
-        # F0 range: 85-255 Hz (male), 165-255 Hz (female)
-        # At 16kHz: 85Hz = 188 samples, 255Hz = 63 samples
-        min_lag = int(self.sample_rate / 400)  # 400 Hz max
-        max_lag = int(self.sample_rate / 70)   # 70 Hz min
-
-        if max_lag >= len(corr):
-            return None
-
-        # Find peak in valid range
-        search_range = corr[min_lag:max_lag]
-        if len(search_range) == 0:
-            return None
-
-        peak_idx = np.argmax(search_range) + min_lag
-
-        # Validate peak (should be significant)
-        if corr[peak_idx] < 0.3 * corr[0]:
-            return None
-
-        f0 = self.sample_rate / peak_idx
-        return f0
+    # =========================================================================
+    # Feature Detection
+    # =========================================================================
 
     def _detect_energy_drop(self) -> bool:
         """
@@ -122,15 +130,12 @@ class PhraseEndDetector:
         if len(self._energy_history) < 3:
             return False
 
-        # Current energy vs peak
         current = self._energy_history[-1]
 
-        if self._peak_energy < 1e-10:
+        if self._peak_energy < ENERGY_EPSILON:
             return False
 
         ratio = current / self._peak_energy
-
-        # Energy dropped below threshold
         return ratio < self.energy_drop_threshold
 
     def _detect_pitch_drop(self) -> bool:
@@ -143,21 +148,34 @@ class PhraseEndDetector:
         if len(self._pitch_history) < 3:
             return False
 
-        # Get valid pitch values (non-None)
         valid_pitches = [p for p in self._pitch_history if p is not None and p > 0]
 
         if len(valid_pitches) < 2:
             return False
 
-        # Check if pitch is falling
-        recent = np.mean(valid_pitches[-2:]) if len(valid_pitches) >= 2 else valid_pitches[-1]
-        earlier = np.mean(valid_pitches[:2]) if len(valid_pitches) >= 2 else valid_pitches[0]
+        recent = self._get_recent_pitch_average(valid_pitches)
+        earlier = self._get_earlier_pitch_average(valid_pitches)
 
-        # Pitch drop of >15% indicates falling intonation
         if earlier > 0:
-            return (earlier - recent) / earlier > 0.15
+            return (earlier - recent) / earlier > PITCH_DROP_THRESHOLD
 
         return False
+
+    def _get_recent_pitch_average(self, pitches: list) -> float:
+        """Get average of recent pitch values."""
+        if len(pitches) >= 2:
+            return float(np.mean(pitches[-2:]))
+        return pitches[-1] if pitches else 0.0
+
+    def _get_earlier_pitch_average(self, pitches: list) -> float:
+        """Get average of earlier pitch values."""
+        if len(pitches) >= 2:
+            return float(np.mean(pitches[:2]))
+        return pitches[0] if pitches else 0.0
+
+    # =========================================================================
+    # Main Detection Logic
+    # =========================================================================
 
     def update(self, audio_block: np.ndarray, is_silent: bool) -> None:
         """
@@ -178,7 +196,11 @@ class PhraseEndDetector:
         if pitch is not None:
             self._pitch_history.append(pitch)
 
-        # Track peak energy during speech
+        # Update state
+        self._update_speech_state(energy, is_silent)
+
+    def _update_speech_state(self, energy: float, is_silent: bool) -> None:
+        """Update speech tracking state."""
         if not is_silent:
             self._speech_started = True
             if energy > self._peak_energy:
@@ -203,8 +225,7 @@ class PhraseEndDetector:
             True if this appears to be end of phrase
         """
         if not getattr(config, 'ENABLE_PHRASE_DETECTION', True):
-            # Fallback to simple silence count
-            return is_silent and self._silence_count >= config.SILENCE_BLOCKS_BEFORE_FLUSH
+            return self._fallback_detection(is_silent)
 
         # Must have silence
         if not is_silent:
@@ -214,29 +235,45 @@ class PhraseEndDetector:
         if not self._speech_started:
             return False
 
-        # Minimum silence required (at least 1 block)
+        # Minimum silence required
         if self._silence_count < 1:
             return False
 
-        # Check acoustic indicators
+        return self._evaluate_phrase_end()
+
+    def _fallback_detection(self, is_silent: bool) -> bool:
+        """Fallback to simple silence count when phrase detection disabled."""
+        return is_silent and self._silence_count >= config.SILENCE_BLOCKS_BEFORE_FLUSH
+
+    def _evaluate_phrase_end(self) -> bool:
+        """
+        Evaluate phrase end using acoustic indicators.
+
+        Decision logic:
+        - 3+ blocks silence = phrase end (definite)
+        - 2+ blocks silence + energy drop = phrase end
+        - 1+ block silence + energy drop + pitch drop = phrase end
+        """
         energy_drop = self._detect_energy_drop()
         pitch_drop = self._detect_pitch_drop()
 
-        # Decision logic:
-        # - 2+ blocks silence + energy drop = phrase end
-        # - 1 block silence + energy drop + pitch drop = phrase end
-        # - 3+ blocks silence = phrase end (fallback)
-
-        if self._silence_count >= 3:
+        # Definite phrase end after enough silence
+        if self._silence_count >= SILENCE_BLOCKS_DEFINITE:
             return True
 
-        if self._silence_count >= 2 and energy_drop:
+        # Phrase end with energy drop
+        if self._silence_count >= SILENCE_BLOCKS_WITH_ENERGY and energy_drop:
             return True
 
-        if self._silence_count >= 1 and energy_drop and pitch_drop:
+        # Phrase end with both energy and pitch drop
+        if self._silence_count >= SILENCE_BLOCKS_WITH_PITCH and energy_drop and pitch_drop:
             return True
 
         return False
+
+    # =========================================================================
+    # Metrics
+    # =========================================================================
 
     def get_confidence(self) -> float:
         """
@@ -250,21 +287,21 @@ class PhraseEndDetector:
 
         score = 0.0
 
-        # Silence contribution
+        # Silence contribution (40% max)
         silence_score = min(self._silence_count / 3.0, 1.0) * 0.4
         score += silence_score
 
-        # Energy drop contribution
+        # Energy drop contribution (35%)
         if self._detect_energy_drop():
             score += 0.35
 
-        # Pitch drop contribution
+        # Pitch drop contribution (25%)
         if self._detect_pitch_drop():
             score += 0.25
 
         return min(score, 1.0)
 
-    def get_metrics(self) -> dict[str, float]:
+    def get_metrics(self) -> Dict[str, Any]:
         """
         Get current detection metrics for debugging.
 
@@ -275,7 +312,8 @@ class PhraseEndDetector:
             "current_energy": self._energy_history[-1] if self._energy_history else 0.0,
             "peak_energy": self._peak_energy,
             "silence_count": float(self._silence_count),
-            "energy_drop_detected": 1.0 if self._detect_energy_drop() else 0.0,
-            "pitch_drop_detected": 1.0 if self._detect_pitch_drop() else 0.0,
+            "speech_started": self._speech_started,
+            "energy_drop_detected": self._detect_energy_drop(),
+            "pitch_drop_detected": self._detect_pitch_drop(),
             "confidence": self.get_confidence(),
         }
