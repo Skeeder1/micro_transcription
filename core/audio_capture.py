@@ -58,16 +58,14 @@ def make_audio_callback(ctx: AppContext):
         if status:
             print(f"⚠️ Audio status: {status}")
 
-        # Ne capturer l'audio QUE si le système est actif (pas en veille)
-        with ctx.sleep_lock:
-            if ctx.is_sleeping:
-                return  # Ignore audio pendant la veille
-
-        # Ne capturer l'audio QUE si l'enregistrement est activé (F8)
+        # PRIORITÉ 1: Pause manuelle F8 → ignorer complètement l'audio
         with ctx.recording_lock:
             if not ctx.is_recording:
-                return  # Ignore audio quand enregistrement désactivé
+                return  # Pause F8: ignorer tout audio, pas d'auto-réveil
 
+        # PRIORITÉ 2: Si enregistrement actif (F8 ON), capturer l'audio
+        # MÊME en veille auto-sleep (pour permettre auto-réveil par détection voix)
+        # Note: le processor gère la distinction sleep/actif et l'auto-wake
         ctx.audio_queue.put(indata.copy())
 
     return _callback

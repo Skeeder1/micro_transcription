@@ -250,6 +250,92 @@ def is_recording(ctx: AppContext) -> bool:
         return ctx.is_recording
 
 
+def can_auto_wake(ctx: AppContext) -> bool:
+    """
+    Check if auto-wake is possible.
+
+    Auto-wake is allowed when:
+    - Recording is active (F8 ON)
+    - System is sleeping (auto-sleep)
+    - Sleep was NOT manual (F9 was not pressed)
+
+    Returns:
+        True if auto-wake is possible
+    """
+    with ctx.recording_lock:
+        recording = ctx.is_recording
+
+    with ctx.sleep_lock:
+        sleeping = ctx.is_sleeping
+        manual = ctx.manual_sleep
+
+    return recording and sleeping and not manual
+
+
+def auto_wake(ctx: AppContext) -> bool:
+    """
+    Automatically wake up if conditions are met.
+
+    This is called when voice is detected during auto-sleep.
+    Only works if:
+    - F8 is ON (recording active)
+    - Currently in auto-sleep (not manual F9 sleep)
+
+    Returns:
+        True if woke up, False if conditions not met
+    """
+    from api.server import broadcast_preview, broadcast_state
+
+    # Check conditions atomically
+    with ctx.recording_lock:
+        recording = ctx.is_recording
+
+    with ctx.sleep_lock:
+        if not ctx.is_sleeping:
+            return False  # Already awake
+        if ctx.manual_sleep:
+            return False  # Manual sleep, need F9 to wake
+        if not recording:
+            return False  # F8 paused, no auto-wake
+
+        # Conditions met - wake up
+        was_deep = ctx.is_deep_sleeping
+        ctx.is_sleeping = False
+        ctx.is_deep_sleeping = False
+        ctx.sleep_start_time = 0.0
+
+    ctx.last_speech_time = time.time()
+
+    print("\n🔊 AUTO-RÉVEIL - Voix détectée!")
+
+    if was_deep:
+        # Deep sleep recovery (rare case - should reload models)
+        from core.models import init_models
+        from ui.manager import start_visualizer
+
+        print("   → Rechargement des modèles IA...")
+        broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
+
+        try:
+            init_models(ctx)
+            print("   ✅ Modèles rechargés")
+        except Exception as exc:
+            print(f"   ❌ Erreur rechargement modèles: {exc}")
+            with ctx.sleep_lock:
+                ctx.is_sleeping = True
+                ctx.is_deep_sleeping = True
+            return False
+
+        print("   → Relancement du visualizer...")
+        start_visualizer(ctx)
+        time.sleep(config.VISUALIZER_START_DELAY)
+
+    broadcast_state(ctx, "active")
+    broadcast_preview(ctx, "🔊 Auto-réveil - Parlez!")
+
+    return True
+
+
 def check_visualizer_closed(ctx: AppContext) -> None:
     if is_sleeping(ctx):
         return
