@@ -40,6 +40,7 @@
   </div>
 
   <script src='https://unpkg.com/wavesurfer.js@7'></script>
+  <script src='https://unpkg.com/wavesurfer.js@7/dist/plugins/record.min.js'></script>
   <script src='qrc:///qtwebchannel/qwebchannel.js'></script>
 
   <!-- Inject SSE port from Python -->
@@ -47,6 +48,6 @@
     window.SSE_PORT = {{SSE_PORT}};
   </script>
 
-  <script type='module' src="qrc:///static/js/visualizer.js"></script>
+  <script src="qrc:///static/js/visualizer.js"></script>
 </body>
 </html>

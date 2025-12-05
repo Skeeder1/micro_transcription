@@ -1,14 +1,15 @@
 /* Micro Transcription - Visualizer JavaScript */
 /* WaveSurfer.js waveform + VAD/Processing indicators via SSE */
 
-console.log('[Module] Starting visualizer...');
+(function() {
+'use strict';
 
-import RecordPlugin from 'https://unpkg.com/wavesurfer.js@7/dist/plugins/record.esm.js';
-console.log('[Module] RecordPlugin imported');
+console.log('[Visualizer] Starting...');
 
-let wavesurfer;
-let record;
-let eventSource;
+let RecordPlugin = null;
+let wavesurfer = null;
+let record = null;
+let eventSource = null;
 
 // DOM Elements
 const panel = document.querySelector('.panel');
@@ -23,7 +24,7 @@ const previewContainer = document.querySelector('#preview-container');
 const sseStatus = document.querySelector('#sse-status');
 const errorDiv = document.querySelector('#error');
 
-console.log('[Module] DOM elements selected');
+console.log('[Visualizer] DOM elements selected');
 
 // ===========================================
 // Status Management
@@ -314,7 +315,10 @@ const initialize = async () => {
       showError('WaveSurfer non charge');
       return;
     }
-    if (typeof RecordPlugin === 'undefined') {
+
+    // Get RecordPlugin from WaveSurfer global
+    RecordPlugin = WaveSurfer.Record;
+    if (!RecordPlugin) {
       showError('RecordPlugin non charge');
       return;
     }
@@ -371,3 +375,5 @@ window.addEventListener('beforeunload', () => {
     eventSource.close();
   }
 });
+
+})(); // End IIFE
