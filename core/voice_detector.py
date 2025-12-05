@@ -82,6 +82,11 @@ class VoiceDetector:
         # Calibration: collect ~4 chunks (2 seconds at 0.5s per chunk)
         self._max_calibration_count: int = 4
 
+        # Recalibration state
+        self._seconds_since_last_speech: float = 0.0
+        self._last_update_time: float = 0.0
+        self._recalibration_threshold: float = 30.0  # Recalibrate after 30s of silence
+
     def _load_model(self) -> None:
         """Load Silero VAD model (lazy initialization)."""
         if self._model_loaded:
@@ -243,6 +248,60 @@ class VoiceDetector:
             print(f"⚠️ Erreur Silero VAD: {e}")
             return 0.0
 
+    def _get_silero_probability_voting(self, audio: np.ndarray) -> tuple[float, bool]:
+        """
+        Get voice probability using sliding window with majority voting.
+
+        More robust than simple MAX - reduces false positives from noise spikes.
+
+        Args:
+            audio: Audio chunk (numpy array, float32)
+
+        Returns:
+            Tuple of (average probability, is_voice based on voting)
+        """
+        if self._model is None:
+            return 0.0, False
+
+        try:
+            required_samples = 512 if self.sample_rate == 16000 else 256
+            hop_size = required_samples // 2  # 50% overlap
+
+            if audio.ndim > 1:
+                audio = audio.squeeze()
+
+            if len(audio) < required_samples:
+                audio = np.pad(audio, (0, required_samples - len(audio)), mode='constant')
+                prob = self._model(torch.from_numpy(audio).float(), self.sample_rate).item()
+                return prob, prob > self.silero_threshold
+
+            # Analyze with sliding windows
+            probabilities = []
+            votes = []
+
+            for start in range(0, len(audio) - required_samples + 1, hop_size):
+                chunk = audio[start:start + required_samples]
+                audio_tensor = torch.from_numpy(chunk).float()
+
+                with torch.no_grad():
+                    prob = self._model(audio_tensor, self.sample_rate).item()
+                    probabilities.append(prob)
+                    votes.append(prob > self.silero_threshold)
+
+            if not probabilities:
+                return 0.0, False
+
+            # Majority voting: >50% of windows must detect voice
+            avg_prob = float(np.mean(probabilities))
+            vote_ratio = sum(votes) / len(votes)
+            is_voice = vote_ratio > 0.5
+
+            return avg_prob, is_voice
+
+        except Exception as e:
+            print(f"⚠️ Erreur Silero VAD voting: {e}")
+            return 0.0, False
+
     def is_human_speech(
         self,
         audio: np.ndarray,
@@ -298,13 +357,14 @@ class VoiceDetector:
                     print(f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x < {self.adaptive_boost_factor}x → AMBIANT")
                 return False
 
-            # Step 2: Silero VAD confirmation (is it really voice?)
+            # Step 2: Silero VAD confirmation with voting (is it really voice?)
             if self._model is not None:
-                self._last_silero_prob = self._get_silero_probability(audio)
+                self._last_silero_prob, is_voice_by_voting = self._get_silero_probability_voting(audio)
 
-                if self._last_silero_prob < self.silero_threshold:
+                if not is_voice_by_voting:
                     if debug:
-                        print(f"[VAD] BOOST={self._last_boost:.2f}x OK, mais Silero={self._last_silero_prob:.3f} < {self.silero_threshold} → BRUIT")
+                        print(f"[VAD] BOOST={self._last_boost:.2f}x OK, mais Silero vote={self._last_silero_prob:.3f} → BRUIT")
+                    self._check_recalibration(False)
                     return False
             else:
                 # No Silero, use boost factor only
@@ -325,6 +385,7 @@ class VoiceDetector:
             if debug:
                 print(f"[VAD] ✓ VOIX: REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x Silero={self._last_silero_prob:.3f}")
 
+            self._check_recalibration(True)
             return True
 
         # LEGACY MODE: Simple thresholds
@@ -361,6 +422,7 @@ class VoiceDetector:
             if debug:
                 print(f"[VAD] ✓ VOIX: RMS={self._last_rms:.6f}, Silero={self._last_silero_prob:.3f}, ZCR={self._last_zcr:.4f}")
 
+            self._check_recalibration(True)
             return True
 
     def get_metrics(self) -> dict[str, float]:
@@ -377,7 +439,44 @@ class VoiceDetector:
             "reference_rms": self._reference_rms,
             "boost_factor": self._last_boost,
             "is_calibrating": 1.0 if self._is_calibrating else 0.0,
+            "seconds_since_speech": self._seconds_since_last_speech,
         }
+
+    def _check_recalibration(self, is_speech: bool) -> None:
+        """
+        Check if recalibration is needed and trigger it if so.
+
+        Automatically recalibrates the ambient noise level after
+        extended periods of silence (e.g., environment changed).
+        """
+        import time
+        current_time = time.time()
+
+        if self._last_update_time == 0:
+            self._last_update_time = current_time
+            return
+
+        elapsed = current_time - self._last_update_time
+        self._last_update_time = current_time
+
+        if is_speech:
+            # Reset silence counter on speech
+            self._seconds_since_last_speech = 0.0
+        else:
+            # Accumulate silence time
+            self._seconds_since_last_speech += elapsed
+
+            # Check if recalibration needed
+            if self._seconds_since_last_speech >= self._recalibration_threshold:
+                self._trigger_recalibration()
+
+    def _trigger_recalibration(self) -> None:
+        """Reset calibration state to recalibrate ambient noise level."""
+        self._is_calibrating = True
+        self._calibration_count = 0
+        self._rms_history.clear()
+        self._seconds_since_last_speech = 0.0
+        print("🔄 Recalibration automatique du bruit ambiant...")
 
     def unload_model(self) -> None:
         """Unload Silero VAD model to free memory."""

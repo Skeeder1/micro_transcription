@@ -45,8 +45,7 @@ SILENCE_BLOCKS_BEFORE_FLUSH = 2
 # Active la détection avancée voix/bruit avec Silero VAD
 # True = Utilise Silero VAD + ZCR pour distinguer voix du bruit ambiant
 # False = Utilise uniquement le seuil RMS basique (mode legacy)
-# NOTE: Désactivé temporairement car nécessite torch (installation en cours)
-ENABLE_ADVANCED_VAD = False
+ENABLE_ADVANCED_VAD = True
 
 # Seuil de probabilité Silero VAD (0.0-1.0)
 # 0.3 = Très sensible (détecte chuchotements, peut avoir faux positifs)
@@ -182,3 +181,81 @@ EXECUTOR_MAX_WORKERS = 2
 # Mode debug - Affiche le niveau audio RMS en temps réel
 # Utile pour diagnostiquer les problèmes de détection vocale
 DEBUG_AUDIO_LEVEL = False
+
+
+# ============================================================================
+# BUFFER LIMITS - Protection contre accumulation mémoire
+# ============================================================================
+
+# Durée maximum d'enregistrement continu avant flush forcé (secondes)
+# 30s = Protection contre parole continue sans pause
+MAX_PRODUCTION_SECONDS = 30.0
+
+# Nombre maximum de blocks dans le buffer de production
+MAX_PRODUCTION_BLOCKS = int(MAX_PRODUCTION_SECONDS / BLOCK_SECONDS)
+
+
+# ============================================================================
+# NOISE REDUCTION - Réduction de bruit avancée
+# ============================================================================
+
+# Active la réduction de bruit par deep learning
+# True = Utilise noisereduce pour supprimer bruit ambiant (aspirateur, TV, etc.)
+ENABLE_NOISE_REDUCTION = True
+
+# Niveau de réduction du bruit (0.0 à 1.0)
+# 0.5 = Modéré (préserve qualité voix)
+# 0.8 = Agressif (meilleur pour environnements très bruyants)
+NOISE_REDUCTION_STRENGTH = 0.75
+
+# Utiliser le mode stationnaire (bruit constant comme ventilateur)
+# False = Mode non-stationnaire (bruit variable comme TV)
+NOISE_STATIONARY = False
+
+
+# ============================================================================
+# WHISPER PROMPTS - Contexte initial pour améliorer transcription
+# ============================================================================
+
+# Prompt initial pour guider Whisper sur le contexte
+INITIAL_PROMPT = """Transcription de dictée vocale en français.
+Le locuteur parle clairement avec une prononciation standard."""
+
+# Vocabulaire personnalisé (noms propres, termes techniques fréquents)
+# Whisper utilisera ces mots comme indices de contexte
+VOCABULARY_BOOST = [
+    "Claude", "Anthropic", "Python", "JavaScript", "TypeScript",
+    "Linux", "Ubuntu", "Windows", "Docker", "Git", "GitHub",
+]
+
+
+# ============================================================================
+# PHRASE DETECTION - Détection intelligente de fin de phrase
+# ============================================================================
+
+# Active la détection intelligente de fin de phrase
+# True = Combine silence + chute d'énergie + analyse prosodique
+ENABLE_PHRASE_DETECTION = True
+
+# Seuil de chute d'énergie pour détecter fin de mot/phrase (0.0 à 1.0)
+# 0.3 = Chute de 70% de l'énergie = probable fin de phrase
+ENERGY_DROP_THRESHOLD = 0.3
+
+# Nombre de blocks pour calculer la tendance d'énergie
+ENERGY_HISTORY_BLOCKS = 5
+
+
+# ============================================================================
+# SPEAKER VERIFICATION - Distinction voix utilisateur vs autres
+# ============================================================================
+
+# Active la vérification du locuteur
+# True = Ne transcrit que la voix de l'utilisateur enregistré
+ENABLE_SPEAKER_VERIFICATION = False  # Désactivé par défaut (nécessite enregistrement)
+
+# Seuil de similarité pour accepter la voix (0.0 à 1.0)
+# 0.7 = 70% de similarité minimum avec l'empreinte enregistrée
+SPEAKER_SIMILARITY_THRESHOLD = 0.7
+
+# Chemin vers le fichier d'empreinte vocale
+SPEAKER_EMBEDDING_PATH = "data/user_embedding.npy"

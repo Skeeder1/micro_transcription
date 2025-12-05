@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import TimeoutError
 from queue import Empty
+from typing import Optional
 
 import numpy as np
 
@@ -13,6 +14,7 @@ from shared.context import AppContext
 from .audio_capture import detect_activity, paste_via_clipboard
 from .audio_preprocessing import preprocess_audio
 from .models import transcribe_preview, transcribe_production
+from .phrase_detector import PhraseEndDetector
 
 
 # These imports will be updated once we move sleep and sse modules
@@ -70,6 +72,16 @@ def run(ctx: AppContext) -> None:
     last_preview_update = time.time()
     last_sleep_check = time.time()
 
+    # Initialize phrase end detector
+    phrase_detector = PhraseEndDetector(
+        sample_rate=config.SAMPLE_RATE,
+        history_size=getattr(config, 'ENERGY_HISTORY_BLOCKS', 5),
+        energy_drop_threshold=getattr(config, 'ENERGY_DROP_THRESHOLD', 0.3),
+    )
+
+    # Get max buffer size from config
+    max_production_blocks = getattr(config, 'MAX_PRODUCTION_BLOCKS', 60)  # Default 30s
+
     if config.ENABLE_PREVIEW:
         print("🎙️ Écoute active... (Ctrl+C pour quitter)")
         print("   💬 Preview → Visualiseur (temps réel)")
@@ -104,12 +116,37 @@ def run(ctx: AppContext) -> None:
             except Empty:
                 continue
 
-            if detect_activity(audio_block, ctx.voice_detector):
+            is_voice_active = detect_activity(audio_block, ctx.voice_detector)
+
+            # Update phrase detector with current audio
+            phrase_detector.update(audio_block, not is_voice_active)
+
+            if is_voice_active:
                 preview_buffer.append(audio_block)
                 production_buffer.append(audio_block)
                 silence_blocks = 0
 
                 update_speech_timer(ctx)
+
+                # Check for buffer overflow (protection against very long speech)
+                if len(production_buffer) >= max_production_blocks:
+                    print(f"\n⚠️ Buffer limit ({getattr(config, 'MAX_PRODUCTION_SECONDS', 30)}s) - forcing transcription...")
+                    production_audio = np.concatenate(production_buffer, axis=0)
+                    # Apply full audio preprocessing with noise reduction
+                    production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE, for_production=True)
+                    print("\r" + " " * 80 + "\r", end="", flush=True)
+                    broadcast_preview(ctx, "")
+
+                    final_text = transcribe_production(ctx, production_audio)
+                    if final_text:
+                        print(f"📋 {final_text}")
+                        paste_via_clipboard(ctx, final_text)
+
+                    preview_buffer.clear()
+                    production_buffer.clear()
+                    phrase_detector.reset()
+                    silence_blocks = 0
+                    continue
 
                 # Preview temps réel (uniquement si activée)
                 if config.ENABLE_PREVIEW:
@@ -121,8 +158,8 @@ def run(ctx: AppContext) -> None:
                     if now - last_preview_update >= config.PREVIEW_UPDATE_INTERVAL:
                         if preview_buffer:
                             preview_audio = np.concatenate(preview_buffer, axis=0)
-                            # Apply audio preprocessing (high-pass filter, amplification, normalization)
-                            preview_audio = preprocess_audio(preview_audio, sample_rate=config.SAMPLE_RATE)
+                            # Apply lighter preprocessing for preview (no noise reduction for speed)
+                            preview_audio = preprocess_audio(preview_audio, sample_rate=config.SAMPLE_RATE, for_production=False)
                             future = ctx.executor.submit(transcribe_preview, ctx, preview_audio)
                             try:
                                 preview_text = future.result(timeout=config.PREVIEW_TIMEOUT)
@@ -139,10 +176,18 @@ def run(ctx: AppContext) -> None:
             # Production (uniquement si activée)
             if config.ENABLE_PRODUCTION and production_buffer:
                 silence_blocks += 1
-                if silence_blocks >= config.SILENCE_BLOCKS_BEFORE_FLUSH:
+
+                # Use intelligent phrase end detection
+                should_flush = phrase_detector.is_phrase_end(is_silent=True)
+
+                # Fallback to simple silence count if phrase detection disabled
+                if not getattr(config, 'ENABLE_PHRASE_DETECTION', True):
+                    should_flush = silence_blocks >= config.SILENCE_BLOCKS_BEFORE_FLUSH
+
+                if should_flush:
                     production_audio = np.concatenate(production_buffer, axis=0)
-                    # Apply audio preprocessing for cleaner final transcription
-                    production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE)
+                    # Apply full audio preprocessing with noise reduction
+                    production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE, for_production=True)
                     print("\r" + " " * 80 + "\r", end="", flush=True)
                     broadcast_preview(ctx, "")
 
@@ -153,13 +198,14 @@ def run(ctx: AppContext) -> None:
 
                     preview_buffer.clear()
                     production_buffer.clear()
+                    phrase_detector.reset()
                     silence_blocks = 0
     except KeyboardInterrupt:
         if config.ENABLE_PRODUCTION and production_buffer:
             print("\r" + " " * 80 + "\r", end="", flush=True)
             production_audio = np.concatenate(production_buffer, axis=0)
-            # Apply audio preprocessing on final transcription
-            production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE)
+            # Apply full audio preprocessing with noise reduction
+            production_audio = preprocess_audio(production_audio, sample_rate=config.SAMPLE_RATE, for_production=True)
             final_text = transcribe_production(ctx, production_audio)
             if final_text:
                 print(f"📋 {final_text}")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from shared import config
+
 
 def normalize_audio(audio: np.ndarray) -> np.ndarray:
     """
@@ -89,18 +91,24 @@ def amplify_audio(audio: np.ndarray, target_rms: float = 0.1) -> np.ndarray:
     return audio * gain
 
 
-def preprocess_audio(audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
+def preprocess_audio(
+    audio: np.ndarray,
+    sample_rate: int = 16000,
+    for_production: bool = True
+) -> np.ndarray:
     """
     Apply all preprocessing steps to audio.
 
     Pipeline:
     1. High-pass filter (remove hum and low noise)
-    2. Amplification (boost quiet speech)
-    3. Normalization (prevent clipping)
+    2. Noise reduction (deep learning, if enabled)
+    3. Amplification (boost quiet speech)
+    4. Normalization (prevent clipping)
 
     Args:
         audio: Raw audio signal
         sample_rate: Sample rate in Hz
+        for_production: True for production (full processing), False for preview (lighter)
 
     Returns:
         Preprocessed audio ready for Whisper
@@ -108,10 +116,18 @@ def preprocess_audio(audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
     # Step 1: High-pass filter (80 Hz cutoff removes 50/60 Hz hum and low rumble)
     audio = apply_highpass_filter(audio, sample_rate, cutoff_hz=80.0)
 
-    # Step 2: Amplify if signal is too quiet
+    # Step 2: Noise reduction (only for production to save latency on preview)
+    if for_production and getattr(config, 'ENABLE_NOISE_REDUCTION', False):
+        try:
+            from .noise_reduction import reduce_noise
+            audio = reduce_noise(audio, sample_rate)
+        except ImportError as e:
+            pass  # Noise reduction not available, continue without it
+
+    # Step 3: Amplify if signal is too quiet
     audio = amplify_audio(audio, target_rms=0.1)
 
-    # Step 3: Normalize to [-1, 1] to prevent clipping
+    # Step 4: Normalize to [-1, 1] to prevent clipping
     audio = normalize_audio(audio)
 
     return audio

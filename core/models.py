@@ -145,6 +145,14 @@ def _flatten(audio: np.ndarray) -> np.ndarray:
 
 def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
     """Run transcription with the unified model configuration."""
+    # Build initial prompt from config
+    initial_prompt = getattr(config, 'INITIAL_PROMPT', None)
+
+    # Add vocabulary boost words to prompt if available
+    vocab_boost = getattr(config, 'VOCABULARY_BOOST', [])
+    if vocab_boost and initial_prompt:
+        initial_prompt = initial_prompt + "\nVocabulaire: " + ", ".join(vocab_boost)
+
     params = {
         "language": config.LANGUAGE,
         "temperature": config.TEMPERATURE,
@@ -154,6 +162,10 @@ def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
         "word_timestamps": config.WORD_TIMESTAMPS,
         "best_of": config.BEST_OF,
     }
+
+    # Add initial prompt if configured
+    if initial_prompt:
+        params["initial_prompt"] = initial_prompt
 
     try:
         segments, _ = model.transcribe(_flatten(audio), **params)
