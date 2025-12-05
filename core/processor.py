@@ -33,6 +33,41 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
+# Waveform Configuration
+# =============================================================================
+
+# Number of subdivisions per audio block for smooth waveform
+# With BLOCK_SECONDS=0.5, this gives 0.5/20 = 25ms per sample = 40 Hz
+WAVEFORM_SUBDIVISIONS = 20
+
+
+def _broadcast_waveform_subdivided(ctx, audio_block, is_voice, broadcast_waveform) -> None:
+    """
+    Broadcast multiple waveform samples per audio block for fluid animation.
+
+    Instead of sending 1 sample per 0.5s block (2 Hz), we subdivide
+    each block into WAVEFORM_SUBDIVISIONS samples (~40 Hz).
+    """
+    flat_audio = audio_block.flatten()
+    total_samples = len(flat_audio)
+    samples_per_sub = total_samples // WAVEFORM_SUBDIVISIONS
+
+    if samples_per_sub < 10:
+        # Block too small to subdivide, send as single sample
+        rms, peak = compute_waveform_metrics(audio_block)
+        broadcast_waveform(ctx, rms, peak, is_voice)
+        return
+
+    for i in range(WAVEFORM_SUBDIVISIONS):
+        start = i * samples_per_sub
+        end = start + samples_per_sub
+        sub_block = flat_audio[start:end]
+
+        rms, peak = compute_waveform_metrics(sub_block)
+        broadcast_waveform(ctx, rms, peak, is_voice)
+
+
+# =============================================================================
 # Main Processing Loop
 # =============================================================================
 
@@ -94,9 +129,8 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep, is_sleeping,
             # Detect voice activity
             is_voice = detect_activity(audio_block, ctx.voice_detector)
 
-            # Compute and broadcast waveform data (preprocessed)
-            rms, peak = compute_waveform_metrics(audio_block, config.SAMPLE_RATE)
-            broadcast_waveform(ctx, rms, peak, is_voice)
+            # Broadcast subdivided waveform data (40 Hz for fluid animation)
+            _broadcast_waveform_subdivided(ctx, audio_block, is_voice, broadcast_waveform)
 
             # Update speech timer on voice activity
             if is_voice:
@@ -214,9 +248,8 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep, is_sleeping
             is_voice = detect_activity(audio_block, ctx.voice_detector)
             phrase_detector.update(audio_block, not is_voice)
 
-            # Compute and broadcast waveform data (preprocessed)
-            rms, peak = compute_waveform_metrics(audio_block, config.SAMPLE_RATE)
-            broadcast_waveform(ctx, rms, peak, is_voice)
+            # Broadcast subdivided waveform data (40 Hz for fluid animation)
+            _broadcast_waveform_subdivided(ctx, audio_block, is_voice, broadcast_waveform)
 
             # Diagnostic: count voice/silence ratio
             if is_voice:

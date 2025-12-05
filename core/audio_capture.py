@@ -102,35 +102,36 @@ def detect_activity(
     return rms > config.ENERGY_THRESHOLD
 
 
-def compute_waveform_metrics(audio_block: np.ndarray, sample_rate: int = 16000) -> tuple[float, float]:
+def compute_waveform_metrics(audio_block: np.ndarray) -> tuple[float, float]:
     """
-    Compute RMS and Peak levels on preprocessed audio for waveform visualization.
+    Compute normalized RMS and Peak for waveform visualization.
 
-    Applies lightweight preprocessing (highpass + amplify) to match what Whisper sees,
-    then calculates metrics for the frontend waveform display.
+    Uses adaptive normalization so microphone sensitivity doesn't affect display.
+    Optimized for high frequency calls (~40 Hz).
 
     Args:
         audio_block: Raw audio chunk from sounddevice
-        sample_rate: Audio sample rate (default 16000 Hz)
 
     Returns:
-        (rms, peak) tuple, both normalized to 0-1 range
+        (normalized_rms, peak) tuple, both in 0-1 range
     """
-    from .audio_preprocessing import apply_highpass_filter, amplify_audio
-
     # Flatten to 1D if needed
     audio = audio_block.flatten().astype(np.float32)
 
-    # Lightweight preprocessing (same as Whisper pipeline, but no noise reduction)
-    audio = apply_highpass_filter(audio, sample_rate=sample_rate, cutoff_hz=80.0)
-    audio = amplify_audio(audio, target_rms=0.1)
-
-    # Calculate metrics
+    # Calculate raw metrics
     rms = float(np.sqrt(np.mean(np.square(audio))))
     peak = float(np.abs(audio).max())
 
+    # Adaptive normalization: RMS relative to peak
+    # This makes the display independent of microphone sensitivity
+    if peak > 0.001:
+        # Normalize RMS by peak, scale for visibility
+        normalized_rms = (rms / peak) * 0.6
+    else:
+        normalized_rms = 0.0
+
     # Clamp to [0, 1] range
-    return min(rms, 1.0), min(peak, 1.0)
+    return min(normalized_rms, 1.0), min(peak, 1.0)
 
 
 def _paste_linux_xdotool(text: str) -> bool:
