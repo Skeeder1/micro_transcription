@@ -1,4 +1,12 @@
-"""Sleep/awake state management."""
+"""Sleep/awake state management - Nouvelle logique F8/F9.
+
+F9 = Système ON/OFF (contrôle principal)
+F8 = Micro ON/OFF (seulement si système ON)
+
+Auto-sleep après 30s = équivalent à F9 OFF
+Deep sleep après 30min = décharge les modèles
+Auto-wake = SUPPRIMÉ
+"""
 
 from __future__ import annotations
 
@@ -8,89 +16,63 @@ from shared import config
 from shared.context import AppContext
 
 
-def enter_sleep_mode(ctx: AppContext, manual: bool = False) -> None:
-    # Import here to avoid circular imports
-    from api.server import broadcast_preview, broadcast_state
-    from queue import Empty
+# =============================================================================
+# System State Helpers
+# =============================================================================
 
+def is_system_active(ctx: AppContext) -> bool:
+    """Check if system is active (not sleeping)."""
     with ctx.sleep_lock:
-        if ctx.is_sleeping:
-            print("[Veille] Déjà en veille, skip")
-            return
-        ctx.is_sleeping = True
-        ctx.is_deep_sleeping = False
-        ctx.sleep_start_time = time.time()
-        ctx.manual_sleep = manual
-
-    # Vider la queue audio pour éviter le traitement de blocs obsolètes
-    cleared_blocks = 0
-    try:
-        while True:
-            ctx.audio_queue.get_nowait()
-            cleared_blocks += 1
-    except Empty:
-        pass
-
-    if cleared_blocks > 0:
-        print(f"[Veille] Queue audio vidée ({cleared_blocks} blocs obsolètes supprimés)")
-
-    print("\n💤 Mode VEILLE activé" + (" (manuel)" if manual else " (auto)"))
-    print("   Appuyez sur F9 pour réactiver")
-    print(f"   Veille profonde dans {config.DEEP_SLEEP_SECONDS / 60:.0f} minutes...")
-
-    # Au lieu de stopper le visualizer, on change juste son état visuellement
-    broadcast_state(ctx, "sleep")
-    broadcast_preview(ctx, "💤 Mode veille - Appuyez sur F9")
+        return not ctx.is_sleeping
 
 
-def enter_deep_sleep_mode(ctx: AppContext) -> None:
-    """Entre en veille profonde: décharge modèles et ferme visualizer."""
-    from core.models import unload_models
-    from ui.manager import stop_visualizer
-
+def is_sleeping(ctx: AppContext) -> bool:
+    """Check if system is sleeping."""
     with ctx.sleep_lock:
-        if ctx.is_deep_sleeping:
-            print("[Veille Profonde] Déjà en veille profonde, skip")
-            return
-        if not ctx.is_sleeping:
-            print("[Veille Profonde] Doit être en veille simple d'abord")
-            return
-        ctx.is_deep_sleeping = True
-
-    print("\n🌙 Mode VEILLE PROFONDE activé")
-    print("   → Déchargement des modèles IA...")
-    print("   → Fermeture du visualizer...")
-    print("   Appuyez sur F9 pour réactiver (délai: ~3-5s)")
-
-    # Décharger les modèles de RAM
-    unload_models(ctx)
-
-    # Fermer le visualizer pour économiser ressources
-    stop_visualizer(ctx)
-
-    print("   ✅ Veille profonde active - Consommation minimale")
+        return ctx.is_sleeping
 
 
-def exit_sleep_mode(ctx: AppContext) -> None:
+def is_recording(ctx: AppContext) -> bool:
+    """Check if microphone is currently recording."""
+    with ctx.recording_lock:
+        return ctx.is_recording
+
+
+# =============================================================================
+# F9 - System ON/OFF Control
+# =============================================================================
+
+def activate_system(ctx: AppContext) -> None:
+    """
+    F9 ON: Activate complete system.
+
+    1. Exit sleep mode
+    2. Reload models if deep sleep
+    3. Start visualizer
+    4. Enable recording (F8 ON by default)
+    5. Broadcast state "active"
+    """
     from core.models import init_models
-    from api.server import broadcast_preview, broadcast_state
+    from api.server import broadcast_preview, broadcast_state, broadcast_recording
     from ui.manager import start_visualizer
     from queue import Empty
 
-    ctx.last_speech_time = time.time()
-
-    was_deep_sleeping = False
+    # Check if already active
     with ctx.sleep_lock:
         if not ctx.is_sleeping:
-            print("[Veille] Déjà actif, skip")
+            print("[Activate] Déjà actif, skip")
             return
         was_deep_sleeping = ctx.is_deep_sleeping
+        # Exit sleep state
         ctx.is_sleeping = False
         ctx.is_deep_sleeping = False
         ctx.sleep_start_time = 0.0
         ctx.manual_sleep = False
 
-    # Vider la queue audio pour éviter le traitement de vieux blocs accumulés
+    # Reset speech timer
+    ctx.last_speech_time = time.time()
+
+    # Clear audio queue
     cleared_blocks = 0
     try:
         while True:
@@ -100,12 +82,12 @@ def exit_sleep_mode(ctx: AppContext) -> None:
         pass
 
     if cleared_blocks > 0:
-        print(f"[Réveil] Queue audio vidée ({cleared_blocks} blocs obsolètes supprimés)")
+        print(f"[Activate] Queue audio vidée ({cleared_blocks} blocs)")
 
-    print("\n🔊 Mode ACTIF - Système réactivé")
+    print("\n🔊 SYSTÈME ACTIVÉ (F9 ON)")
 
     if was_deep_sleeping:
-        # Sortie de veille PROFONDE - recharger ressources
+        # Reload models from deep sleep
         print("   → Rechargement des modèles IA...")
         broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
 
@@ -113,32 +95,102 @@ def exit_sleep_mode(ctx: AppContext) -> None:
             init_models(ctx)
             print("   ✅ Modèles rechargés")
         except Exception as exc:
-            print(f"   ❌ Erreur rechargement modèles: {exc}")
+            print(f"   ❌ Erreur rechargement: {exc}")
             broadcast_preview(ctx, "❌ Erreur rechargement - Redémarrez")
-
-            # NOUVEAU: Restaurer l'état sleep au lieu de laisser incohérent
+            # Restore sleep state on error
             with ctx.sleep_lock:
                 ctx.is_sleeping = True
                 ctx.is_deep_sleeping = True
-
-            print("   → Système remis en veille suite à l'erreur")
             return
 
-        print("   → Relancement du visualizer...")
-        start_visualizer(ctx)
-        time.sleep(config.VISUALIZER_START_DELAY)
+    # Start visualizer
+    print("   → Démarrage visualizer...")
+    start_visualizer(ctx)
+    time.sleep(config.VISUALIZER_START_DELAY)
 
-        broadcast_state(ctx, "active")
-        broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
-        print("[Veille Profonde] Réactivation complète (~3-5s)")
-    else:
-        # Sortie de veille RAPIDE - réactivation instantanée
-        broadcast_state(ctx, "active")
-        broadcast_preview(ctx, "🔊 Système réactivé - Parlez maintenant!")
-        print("[Veille] Réactivation instantanée complète")
+    # Enable recording by default
+    ctx.audio.set_recording(True)
+
+    # Broadcast states
+    broadcast_state(ctx, "active")
+    broadcast_recording(ctx, True)
+    broadcast_preview(ctx, "🔊 Système actif - Parlez maintenant!")
+
+    print("   ✅ Système prêt - Parlez!")
+
+
+def deactivate_system(ctx: AppContext) -> None:
+    """
+    F9 OFF: Deactivate complete system.
+
+    1. Force transcription if audio in buffer
+    2. Stop recording
+    3. Close visualizer
+    4. Enter sleep mode
+    5. Broadcast state "sleep"
+    """
+    from api.server import broadcast_preview, broadcast_state, broadcast_recording
+    from ui.manager import stop_visualizer
+    from queue import Empty
+
+    # Check if already sleeping
+    with ctx.sleep_lock:
+        if ctx.is_sleeping:
+            print("[Deactivate] Déjà en veille, skip")
+            return
+        # Enter sleep state
+        ctx.is_sleeping = True
+        ctx.is_deep_sleeping = False
+        ctx.sleep_start_time = time.time()
+        ctx.manual_sleep = True
+
+    # Reset speech timer to prevent any auto-wake edge cases
+    ctx.last_speech_time = 0
+
+    print("\n💤 SYSTÈME DÉSACTIVÉ (F9 OFF)")
+
+    # Signal force flush to processor (transcribe what's in buffer)
+    ctx.force_flush = True
+
+    # Give processor time to flush (check every 50ms, max 1s)
+    for _ in range(20):
+        if not ctx.force_flush:
+            break
+        time.sleep(0.05)
+
+    # Reset flag in case processor didn't clear it
+    ctx.force_flush = False
+
+    # Disable recording
+    ctx.audio.set_recording(False)
+    broadcast_recording(ctx, False)
+
+    # Clear audio queue
+    cleared_blocks = 0
+    try:
+        while True:
+            ctx.audio_queue.get_nowait()
+            cleared_blocks += 1
+    except Empty:
+        pass
+
+    if cleared_blocks > 0:
+        print(f"   Queue audio vidée ({cleared_blocks} blocs)")
+
+    # Close visualizer
+    print("   → Fermeture visualizer...")
+    stop_visualizer(ctx)
+
+    # Broadcast state
+    broadcast_state(ctx, "sleep")
+    broadcast_preview(ctx, "💤 Mode veille - Appuyez sur F9")
+
+    print("   Appuyez sur F9 pour réactiver")
+    print(f"   Veille profonde dans {config.DEEP_SLEEP_SECONDS / 60:.0f} minutes...")
 
 
 def toggle_sleep_mode(ctx: AppContext) -> None:
+    """F9: Toggle system ON/OFF."""
     current_time = time.time()
     time_since_toggle = current_time - ctx.last_toggle_time
 
@@ -149,32 +201,95 @@ def toggle_sleep_mode(ctx: AppContext) -> None:
         return
 
     ctx.last_toggle_time = current_time
-
     print(f"[Toggle] F9 pressed at {time.strftime('%H:%M:%S', time.localtime(current_time))}")
 
     with ctx.sleep_lock:
         sleeping = ctx.is_sleeping
 
-    print(f"[Toggle] État actuel: {'VEILLE' if sleeping else 'ACTIF'} → {'ACTIF' if sleeping else 'VEILLE'}")
+    print(f"[Toggle] État: {'VEILLE' if sleeping else 'ACTIF'} → {'ACTIF' if sleeping else 'VEILLE'}")
 
     try:
         if sleeping:
-            exit_sleep_mode(ctx)
+            activate_system(ctx)
         else:
-            enter_sleep_mode(ctx, manual=True)
+            deactivate_system(ctx)
     except Exception as exc:
         print(f"❌ Erreur toggle: {exc}")
         ctx.last_toggle_time = 0.0
 
 
+# =============================================================================
+# F8 - Microphone ON/OFF Control
+# =============================================================================
+
+def toggle_recording(ctx: AppContext) -> bool:
+    """
+    F8: Toggle microphone recording (only if system is active).
+
+    When turning OFF:
+    - Forces transcription of buffered audio
+    - Clears audio queue
+
+    Returns:
+        bool: New recording state (True = recording, False = paused)
+        Returns current state if system is OFF (no toggle)
+    """
+    from api.server import broadcast_recording, broadcast_preview
+
+    # Check if system is active - F8 ignored when system OFF
+    if not is_system_active(ctx):
+        print("[F8] Système en veille - F8 ignoré")
+        return ctx.is_recording
+
+    new_state = ctx.audio.toggle_recording()
+
+    if new_state:
+        # F8 ON - Resume recording
+        print("\n🎤 MICRO ACTIVÉ (F8 ON)")
+        broadcast_recording(ctx, True)
+        broadcast_preview(ctx, "🎤 Micro actif - Parlez...")
+    else:
+        # F8 OFF - Pause recording + force transcription
+        print("\n⏸️ MICRO EN PAUSE (F8 OFF)")
+
+        # Signal force flush to processor
+        ctx.force_flush = True
+
+        # Give processor time to flush (check every 50ms, max 1s)
+        for _ in range(20):
+            if not ctx.force_flush:
+                break
+            time.sleep(0.05)
+
+        # Reset flag in case processor didn't clear it
+        ctx.force_flush = False
+
+        # Clear audio queue
+        ctx.audio.clear_queue()
+
+        broadcast_recording(ctx, False)
+        broadcast_preview(ctx, "⏸️ Micro en pause - F8 pour reprendre")
+
+    return new_state
+
+
+# =============================================================================
+# Auto-Sleep (30s inactivity = F9 OFF)
+# =============================================================================
+
 def check_auto_sleep(ctx: AppContext) -> None:
+    """
+    Auto-sleep after 30s of inactivity.
+
+    Equivalent to F9 OFF - closes visualizer and enters sleep.
+    """
     with ctx.sleep_lock:
         if ctx.is_sleeping:
             return
 
     delta = time.time() - ctx.last_speech_time
 
-    # Logging conditionnel toutes les 5 secondes
+    # Throttled logging every 5 seconds
     if not hasattr(check_auto_sleep, '_last_log'):
         check_auto_sleep._last_log = 0.0
 
@@ -187,168 +302,86 @@ def check_auto_sleep(ctx: AppContext) -> None:
 
     if delta > config.AUTO_SLEEP_SECONDS:
         print(f"\n⏰ Inactivité détectée ({config.AUTO_SLEEP_SECONDS}s)")
-        enter_sleep_mode(ctx)
+        # Auto-sleep = equivalent to F9 OFF
+        deactivate_system(ctx)
+
+
+# =============================================================================
+# Deep Sleep (30min = unload models)
+# =============================================================================
+
+def enter_deep_sleep_mode(ctx: AppContext) -> None:
+    """Enter deep sleep: unload models."""
+    from core.models import unload_models
+
+    with ctx.sleep_lock:
+        if ctx.is_deep_sleeping:
+            print("[Veille Profonde] Déjà en veille profonde, skip")
+            return
+        if not ctx.is_sleeping:
+            print("[Veille Profonde] Doit être en veille d'abord")
+            return
+        ctx.is_deep_sleeping = True
+
+    print("\n🌙 VEILLE PROFONDE ACTIVÉE")
+    print("   → Déchargement des modèles IA...")
+    print("   Appuyez sur F9 pour réactiver (délai: ~3-5s)")
+
+    # Unload models to save memory
+    unload_models(ctx)
+
+    print("   ✅ Veille profonde active - Consommation minimale")
+
 
 def check_deep_sleep(ctx: AppContext) -> None:
-    """Vérifie si on doit passer en veille profonde après 10 min de veille."""
+    """Check if should enter deep sleep after 30min of sleep."""
     with ctx.sleep_lock:
-        # Seulement si en veille simple (pas déjà en profonde)
+        # Only if in sleep mode (not already deep)
         if not ctx.is_sleeping or ctx.is_deep_sleeping:
             return
 
         sleep_duration = time.time() - ctx.sleep_start_time
 
-        # Si en veille depuis plus de 10 minutes
         if sleep_duration > config.DEEP_SLEEP_SECONDS:
-            # Sortir du lock avant d'appeler enter_deep_sleep_mode
+            # Exit lock before calling enter_deep_sleep_mode
             pass
         else:
             return
 
-    # Appeler en dehors du lock
+    # Call outside lock
     print(f"\n⏰ Veille prolongée détectée ({sleep_duration / 60:.1f} min)")
     enter_deep_sleep_mode(ctx)
 
 
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
 def update_speech_timer(ctx: AppContext) -> None:
+    """Update last speech time to now."""
     ctx.last_speech_time = time.time()
-
-
-def is_sleeping(ctx: AppContext) -> bool:
-    with ctx.sleep_lock:
-        return ctx.is_sleeping
-
-
-def toggle_recording(ctx: AppContext) -> bool:
-    """
-    Toggle microphone recording on/off.
-
-    Returns:
-        bool: New recording state (True = recording, False = paused)
-    """
-    from api.server import broadcast_recording, broadcast_preview
-
-    new_state = ctx.audio.toggle_recording()
-
-    if new_state:
-        print("\n🎤 ENREGISTREMENT ACTIVÉ (F8)")
-        broadcast_recording(ctx, True)
-        broadcast_preview(ctx, "🎤 Enregistrement actif - Parlez...")
-    else:
-        print("\n⏸️  ENREGISTREMENT EN PAUSE (F8)")
-        broadcast_recording(ctx, False)
-        broadcast_preview(ctx, "⏸️ Enregistrement en pause - F8 pour reprendre")
-        # Vider la queue audio
-        ctx.audio.clear_queue()
-
-    return new_state
-
-
-def is_recording(ctx: AppContext) -> bool:
-    """Check if microphone is currently recording."""
-    with ctx.recording_lock:
-        return ctx.is_recording
-
-
-def can_auto_wake(ctx: AppContext) -> bool:
-    """
-    Check if auto-wake is possible.
-
-    Auto-wake is allowed when:
-    - Recording is active (F8 ON)
-    - System is sleeping (auto-sleep)
-    - Sleep was NOT manual (F9 was not pressed)
-
-    Returns:
-        True if auto-wake is possible
-    """
-    with ctx.recording_lock:
-        recording = ctx.is_recording
-
-    with ctx.sleep_lock:
-        sleeping = ctx.is_sleeping
-        manual = ctx.manual_sleep
-
-    return recording and sleeping and not manual
-
-
-def auto_wake(ctx: AppContext) -> bool:
-    """
-    Automatically wake up if conditions are met.
-
-    This is called when voice is detected during auto-sleep.
-    Only works if:
-    - F8 is ON (recording active)
-    - Currently in auto-sleep (not manual F9 sleep)
-
-    Returns:
-        True if woke up, False if conditions not met
-    """
-    from api.server import broadcast_preview, broadcast_state
-
-    # Check conditions atomically
-    with ctx.recording_lock:
-        recording = ctx.is_recording
-
-    with ctx.sleep_lock:
-        if not ctx.is_sleeping:
-            return False  # Already awake
-        if ctx.manual_sleep:
-            return False  # Manual sleep, need F9 to wake
-        if not recording:
-            return False  # F8 paused, no auto-wake
-
-        # Conditions met - wake up
-        was_deep = ctx.is_deep_sleeping
-        ctx.is_sleeping = False
-        ctx.is_deep_sleeping = False
-        ctx.sleep_start_time = 0.0
-
-    ctx.last_speech_time = time.time()
-
-    print("\n🔊 AUTO-RÉVEIL - Voix détectée!")
-
-    if was_deep:
-        # Deep sleep recovery (rare case - should reload models)
-        from core.models import init_models
-        from ui.manager import start_visualizer
-
-        print("   → Rechargement des modèles IA...")
-        broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
-
-        try:
-            init_models(ctx)
-            print("   ✅ Modèles rechargés")
-        except Exception as exc:
-            print(f"   ❌ Erreur rechargement modèles: {exc}")
-            with ctx.sleep_lock:
-                ctx.is_sleeping = True
-                ctx.is_deep_sleeping = True
-            return False
-
-        print("   → Relancement du visualizer...")
-        start_visualizer(ctx)
-        time.sleep(config.VISUALIZER_START_DELAY)
-
-    broadcast_state(ctx, "active")
-    broadcast_preview(ctx, "🔊 Auto-réveil - Parlez!")
-
-    return True
 
 
 def check_visualizer_closed(ctx: AppContext) -> None:
+    """
+    Check if visualizer was closed by user.
+
+    If closed while system is active, enter sleep mode.
+    """
     if is_sleeping(ctx):
         return
-
-    with ctx.sleep_lock:
-        if ctx.manual_sleep:
-            return
 
     with ctx.visualizer_lock:
         if not ctx.visualizer_proc:
             return
-        should_sleep = ctx.visualizer_proc.poll() is not None
+        visualizer_closed = ctx.visualizer_proc.poll() is not None
 
-    if should_sleep:
-        print("\n🪟 Visualizer fermé (détection auto)")
-        enter_sleep_mode(ctx, manual=False)
+    if visualizer_closed:
+        print("\n🪟 Visualizer fermé par l'utilisateur")
+        # Set sleep state directly (don't call deactivate_system to avoid recursion)
+        with ctx.sleep_lock:
+            ctx.is_sleeping = True
+            ctx.manual_sleep = True
+            ctx.sleep_start_time = time.time()
+        ctx.audio.set_recording(False)
+        print("   → Système en veille - F9 pour réactiver")

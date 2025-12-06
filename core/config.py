@@ -30,12 +30,14 @@ BLOCK_SECONDS = 0.5
 
 # Seuil d'énergie pour détecter de la parole (0.001-0.01 recommandé)
 # Plus bas = plus sensible, détecte les chuchotements
-# 0.015 = réduit bruit ambiant, empêche détection continue (permet auto-sleep)
-ENERGY_THRESHOLD = 0.015
+# 0.008 = très sensible, détecte parole normale
+# 0.015 = réduit bruit ambiant, empêche détection continue
+ENERGY_THRESHOLD = 0.008
 
 # Nombre de blocs silencieux avant de finaliser la transcription
-# 2 blocs * 0.5s = 1.0 seconde de silence minimum (réduit pour latence)
-SILENCE_BLOCKS_BEFORE_FLUSH = 2
+# 5 blocs * 0.5s = 2.5 secondes de silence minimum
+# Augmenté pour éviter flush prématuré sur des pauses courtes
+SILENCE_BLOCKS_BEFORE_FLUSH = 5
 
 
 # ============================================================================
@@ -45,13 +47,15 @@ SILENCE_BLOCKS_BEFORE_FLUSH = 2
 # Active la détection avancée voix/bruit avec Silero VAD
 # True = Utilise Silero VAD + ZCR pour distinguer voix du bruit ambiant
 # False = Utilise uniquement le seuil RMS basique (mode legacy)
-ENABLE_ADVANCED_VAD = True
+# TEMPORAIREMENT DÉSACTIVÉ: Silero renvoie des probabilités très faibles
+ENABLE_ADVANCED_VAD = False
 
 # Seuil de probabilité Silero VAD (0.0-1.0)
-# 0.3 = Très sensible (détecte chuchotements, peut avoir faux positifs)
-# 0.5 = Équilibré (recommandé, bon compromis voix/bruit)
+# 0.15 = Très sensible (détecte même parole faible, nécessite boost RMS)
+# 0.3 = Sensible (détecte chuchotements, peut avoir faux positifs)
+# 0.5 = Équilibré (recommandé si micro de bonne qualité)
 # 0.7 = Strict (rejette plus de bruit, peut manquer parole faible)
-SILERO_THRESHOLD = 0.5
+SILERO_THRESHOLD = 0.15  # Réduit car micro renvoie proba faibles
 
 # Active le filtre Zero Crossing Rate (ZCR)
 # True = Filtre additionnel pour rejeter bruit blanc/sifflement
@@ -74,11 +78,12 @@ USE_ADAPTIVE_DETECTION = True
 
 # Facteur de boost nécessaire pour détecter la voix
 # Votre voix doit être X fois plus forte que le bruit ambiant
-# 1.3 = Très sensible (détecte facilement, risque de faux positifs)
+# 1.1 = Ultra sensible (capture tout)
+# 1.2 = Très sensible (recommandé pour micros faibles)
 # 1.5 = Sensible (recommandé pour micros bruyants)
 # 2.0 = Équilibré (recommandé pour bureau calme)
 # 2.5 = Strict (nécessite voix forte, meilleur pour environnements très bruyants)
-ADAPTIVE_BOOST_FACTOR = 1.5
+ADAPTIVE_BOOST_FACTOR = 1.2
 
 # Durée de la fenêtre de référence pour le niveau ambiant (secondes)
 # Plus court = s'adapte vite aux changements de bruit
@@ -94,14 +99,15 @@ ADAPTIVE_WINDOW_SECONDS = 3.0
 # "small" = Rapide sur CPU (recommandé si pas de GPU) - 2-3s de latence
 # "medium" = Bon compromis qualité/vitesse (nécessite GPU ou CPU puissant)
 # "large" = Meilleure qualité mais TRÈS LENT sur CPU, RAPIDE avec GPU
-WHISPER_MODEL = "large"
+WHISPER_MODEL = "large"  # Modèle large pour meilleure qualité (RTX 4060)
 
 # Périphérique de calcul: "cuda" (GPU NVIDIA) ou "cpu"
-DEVICE = "cuda"
+# Note: "cuda" nécessite driver NVIDIA fonctionnel
+DEVICE = "cuda"  # GPU NVIDIA RTX 4060 (8 GB VRAM)
 
 # Précision des calculs: "float16" (GPU) ou "float32" (CPU)
 # float16 = 2x plus rapide avec GPU compatible
-FLOAT_PRECISION = "float16"
+FLOAT_PRECISION = "float16"  # Optimisé pour GPU RTX 4060
 
 # Nombre de threads pour le chargement du modèle
 MODEL_NUM_WORKERS = 2
@@ -116,7 +122,8 @@ BEAM_SIZE = 5
 
 # Filtre VAD (Voice Activity Detection)
 # True = Ignore les segments sans parole
-VAD_FILTER = True
+# TEMPORAIREMENT DÉSACTIVÉ pour debug
+VAD_FILTER = False
 
 # Conditionner sur le texte précédent
 # True = Meilleure cohérence du texte
@@ -181,7 +188,7 @@ EXECUTOR_MAX_WORKERS = 2
 
 # Mode debug - Affiche le niveau audio RMS en temps réel
 # Utile pour diagnostiquer les problèmes de détection vocale
-DEBUG_AUDIO_LEVEL = False
+DEBUG_AUDIO_LEVEL = True
 
 
 # ============================================================================
@@ -202,7 +209,8 @@ MAX_PRODUCTION_BLOCKS = int(MAX_PRODUCTION_SECONDS / BLOCK_SECONDS)
 
 # Active la réduction de bruit par deep learning
 # True = Utilise noisereduce pour supprimer bruit ambiant (aspirateur, TV, etc.)
-ENABLE_NOISE_REDUCTION = True
+# TEMPORAIREMENT DÉSACTIVÉ: Bug d'allocation mémoire avec noisereduce
+ENABLE_NOISE_REDUCTION = False
 
 # Niveau de réduction du bruit (0.0 à 1.0)
 # 0.5 = Modéré (préserve qualité voix)

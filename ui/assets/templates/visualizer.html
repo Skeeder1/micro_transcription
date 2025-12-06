@@ -2,14 +2,14 @@
 <html lang='fr'>
 <head>
   <meta charset='utf-8'>
-  <title>Visualiseur micro avancé</title>
+  <title>Visualiseur micro avance</title>
   <link rel="stylesheet" href="qrc:///static/css/visualizer.css">
 </head>
 <body>
   <div class='panel'>
     <div class='toolbar'>
-      <button id='rec-btn' class='rec-active' title='Enregistrement ON/OFF (F8)'>
-        <span class='rec-icon'>🎤</span>
+      <button id='rec-btn' class='rec-paused' title='Enregistrement ON/OFF (F8)'>
+        <span class='rec-icon'>⏸️</span>
       </button>
 
       <!-- VAD Indicator -->
@@ -30,7 +30,8 @@
       <span id='sse-status' title='Connexion SSE'></span>
     </div>
 
-    <div id='mic' style='margin-top:12px;'></div>
+    <!-- Canvas Waveform - remplace WaveSurfer -->
+    <canvas id='waveform-canvas'></canvas>
 
     <div id='preview-container'>
       <div id='preview-text' class='empty'>En attente de parole...</div>
@@ -39,15 +40,16 @@
     <div id='error'></div>
   </div>
 
-  <script src='https://unpkg.com/wavesurfer.js@7'></script>
-  <script src='https://unpkg.com/wavesurfer.js@7/dist/plugins/record.min.js'></script>
-  <script src='qrc:///qtwebchannel/qwebchannel.js'></script>
+  <!-- Qt WebChannel - loaded via qrc or fallback -->
+  <script src='qrc:///qtwebchannel/qwebchannel.js' onerror="console.warn('qwebchannel.js not loaded via qrc, WebChannel disabled')"></script>
 
   <!-- Inject SSE port from Python -->
   <script>
     window.SSE_PORT = {{SSE_PORT}};
+    console.log('[HTML] SSE_PORT set to:', window.SSE_PORT);
   </script>
 
+  <!-- Custom canvas waveform - Web Audio API direct -->
   <script src="qrc:///static/js/visualizer.js"></script>
 </body>
 </html>

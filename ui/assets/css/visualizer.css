@@ -24,17 +24,19 @@ body {
   color: #ddd;
 }
 
-/* Waveform */
-#mic {
+/* Waveform Canvas */
+#waveform-canvas {
   height: 90px;
+  width: 100%;
+  display: block;
   border-radius: 6px;
-  overflow: hidden;
   background: #1a1a1a;
+  margin-top: 12px;
   transition: opacity 0.3s;
 }
 
 /* Sleep mode overlay */
-.panel.sleeping #mic {
+.panel.sleeping #waveform-canvas {
   opacity: 0.2;
 }
 

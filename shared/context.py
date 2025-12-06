@@ -99,6 +99,7 @@ class AudioContext:
     last_pasted: str = ""
     is_recording: bool = True  # True = capture audio, False = ignore audio
     recording_lock: threading.Lock = field(default_factory=threading.Lock)
+    force_flush: bool = False  # Signal to processor to force transcription
 
     def clear_queue(self) -> None:
         """Clear all pending audio blocks."""
@@ -292,6 +293,14 @@ class AppContext:
     @property
     def recording_lock(self) -> threading.Lock:
         return self.audio.recording_lock
+
+    @property
+    def force_flush(self) -> bool:
+        return self.audio.force_flush
+
+    @force_flush.setter
+    def force_flush(self, value: bool) -> None:
+        self.audio.force_flush = value
 
     # -------------------------------------------------------------------------
     # UI properties (delegate to ui sub-context)

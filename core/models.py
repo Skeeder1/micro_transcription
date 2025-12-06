@@ -145,6 +145,12 @@ def _flatten(audio: np.ndarray) -> np.ndarray:
 
 def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
     """Run transcription with the unified model configuration."""
+    # Debug: log audio stats
+    audio_flat = _flatten(audio)
+    duration_sec = len(audio_flat) / config.SAMPLE_RATE
+    audio_rms = np.sqrt(np.mean(np.square(audio_flat), dtype=np.float64))
+    print(f"[Whisper] Audio: {duration_sec:.2f}s, RMS={audio_rms:.4f}, samples={len(audio_flat)}", flush=True)
+
     # Build initial prompt from config
     initial_prompt = getattr(config, 'INITIAL_PROMPT', None)
 
@@ -168,12 +174,15 @@ def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
         params["initial_prompt"] = initial_prompt
 
     try:
-        segments, _ = model.transcribe(_flatten(audio), **params)
+        segments, info = model.transcribe(audio_flat, **params)
+        segments_list = list(segments)  # Consommer le générateur
+        print(f"[Whisper] Got {len(segments_list)} segments, language={info.language}, prob={info.language_probability:.2f}", flush=True)
     except Exception as exc:
         log_warn(f"⚠️ Erreur transcription: {exc}")
         return None
 
-    text = "".join(segment.text for segment in segments).strip()
+    text = "".join(segment.text for segment in segments_list).strip()
+    print(f"[Whisper] Result: '{text[:50] if text else '(empty)'}...'", flush=True)
     return text or None
 
 

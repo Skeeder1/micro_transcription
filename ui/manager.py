@@ -42,11 +42,29 @@ def start_visualizer(ctx: AppContext) -> None:
             startupinfo.wShowWindow = subprocess.SW_HIDE
             creationflags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
         else:
-            # Linux: Force software rendering to avoid OpenGL/EGL crashes
+            # Linux: Force X11 (XWayland) instead of Wayland native
+            # This is required for WindowStaysOnTopHint to work correctly
+            env["QT_QPA_PLATFORM"] = "xcb"
+
+            # Force software rendering for QtWebEngine
+            # Disable all OpenGL/GPU features to avoid errors
             env["QT_XCB_GL_INTEGRATION"] = "none"
             env["QT_QUICK_BACKEND"] = "software"
-            env["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu --disable-software-rasterizer --use-gl=disabled"
             env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+            env["QT_OPENGL"] = "software"
+            env["QMLSCENE_DEVICE"] = "softwarecontext"
+            # Chromium flags for WebEngine - comprehensive software rendering
+            env["QTWEBENGINE_CHROMIUM_FLAGS"] = (
+                "--disable-gpu "
+                "--disable-gpu-compositing "
+                "--disable-gpu-rasterization "
+                "--disable-software-rasterizer "
+                "--disable-webgl "
+                "--disable-accelerated-2d-canvas "
+                "--disable-accelerated-video-decode "
+                "--in-process-gpu "
+                "--disable-features=VizDisplayCompositor"
+            )
 
         try:
             # Use the new visualizer app path

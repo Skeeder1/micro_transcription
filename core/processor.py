@@ -38,20 +38,19 @@ def run(ctx: AppContext) -> None:
     # Late imports to avoid circular dependencies
     from shared.sleep import (
         check_auto_sleep, check_deep_sleep, check_visualizer_closed,
-        is_sleeping, update_speech_timer, can_auto_wake, auto_wake
+        is_sleeping, update_speech_timer
     )
     from api.server import broadcast_preview, broadcast_vad, broadcast_processing
 
     if not config.ENABLE_TRANSCRIPTION:
         _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                             check_visualizer_closed, is_sleeping, update_speech_timer,
-                            can_auto_wake, auto_wake, broadcast_vad)
+                            broadcast_vad)
     else:
         _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                                check_visualizer_closed, is_sleeping,
                                update_speech_timer, broadcast_preview,
-                               can_auto_wake, auto_wake, broadcast_vad,
-                               broadcast_processing)
+                               broadcast_vad, broadcast_processing)
 
 
 # =============================================================================
@@ -60,11 +59,12 @@ def run(ctx: AppContext) -> None:
 
 def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                          check_visualizer_closed, is_sleeping, update_speech_timer,
-                         can_auto_wake, auto_wake, broadcast_vad):
+                         broadcast_vad):
     """
     Run in visualizer-only mode (no transcription).
 
     Simply captures audio for visualization and manages sleep state.
+    Auto-wake is DISABLED - only F9 can wake from sleep.
     """
     _print_visualizer_banner()
     last_sleep_check = time.time()
@@ -79,19 +79,9 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                 check_visualizer_closed(ctx)
                 last_sleep_check = time.time()
 
-            # Handle sleep state with potential auto-wake
+            # Handle sleep state - NO auto-wake, just drain queue
             if is_sleeping(ctx):
-                # Check if auto-wake is possible (F8 ON + auto-sleep)
-                if can_auto_wake(ctx):
-                    audio_block = _get_audio_block(ctx)
-                    if audio_block is not None:
-                        # Check for voice to trigger auto-wake
-                        if detect_activity(audio_block, ctx.voice_detector):
-                            auto_wake(ctx)
-                            continue
-                else:
-                    # F8 OFF or manual sleep - just drain queue
-                    _drain_audio_queue(ctx)
+                _drain_audio_queue(ctx)
                 continue
 
             # Get audio block
@@ -120,13 +110,15 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
 def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                            check_visualizer_closed, is_sleeping,
                            update_speech_timer, broadcast_preview,
-                           can_auto_wake, auto_wake, broadcast_vad,
-                           broadcast_processing):
+                           broadcast_vad, broadcast_processing):
     """
     Run full transcription mode with preview and production pipelines.
 
     Uses modular components for buffer management, preview timing,
     and production decisions.
+
+    Auto-wake is DISABLED - only F9 can wake from sleep.
+    Supports force_flush flag for F8 OFF and F9 OFF transcription.
     """
     # Initialize components
     buffer = AudioBuffer(
@@ -160,6 +152,12 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
 
     try:
         while True:
+            # Check force_flush flag (set by F8 OFF or F9 OFF)
+            if ctx.force_flush:
+                _force_flush_buffer(ctx, buffer, phrase_detector,
+                                   broadcast_preview, broadcast_processing)
+                ctx.force_flush = False  # Clear flag
+
             # Throttled sleep checks
             if _should_check_sleep(last_sleep_check):
                 check_auto_sleep(ctx)
@@ -167,22 +165,9 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                 check_visualizer_closed(ctx)
                 last_sleep_check = time.time()
 
-            # Handle sleep state with potential auto-wake
+            # Handle sleep state - NO auto-wake, just drain queue
             if is_sleeping(ctx):
-                # Check if auto-wake is possible (F8 ON + auto-sleep)
-                if can_auto_wake(ctx):
-                    audio_block = _get_audio_block(ctx)
-                    if audio_block is not None:
-                        # Check for voice to trigger auto-wake
-                        if detect_activity(audio_block, ctx.voice_detector):
-                            auto_wake(ctx)
-                            # Reset buffers after auto-wake
-                            buffer.clear()
-                            phrase_detector.reset()
-                            continue
-                else:
-                    # F8 OFF or manual sleep - just drain queue
-                    _drain_audio_queue(ctx)
+                _drain_audio_queue(ctx)
                 continue
 
             # Get audio block
@@ -213,7 +198,7 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                 print(f"\n[DIAG] Voix: {diag_voice_count} ({voice_pct:.0f}%) | "
                       f"Silence: {diag_silence_count} | "
                       f"Buffer: {len(buffer._production)} blocks | "
-                      f"Depuis parole: {delta_speech:.1f}s")
+                      f"Depuis parole: {delta_speech:.1f}s", flush=True)
                 diag_voice_count = 0
                 diag_silence_count = 0
                 diag_last_report = now
@@ -340,6 +325,44 @@ def _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast
     phrase_detector.reset()
 
 
+def _force_flush_buffer(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
+    """
+    Force immediate transcription of buffered audio.
+
+    Called when F8 OFF or F9 OFF is pressed to transcribe
+    whatever audio is currently in the buffer.
+    """
+    if not buffer.has_production_audio:
+        print("[ForceFlush] Pas d'audio en buffer, skip")
+        return
+
+    print("\n⚡ TRANSCRIPTION FORCÉE (F8/F9 OFF)")
+
+    audio = buffer.get_production_audio()
+    if audio is None:
+        return
+
+    broadcast_processing(ctx, True)  # Signal start
+    audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
+
+    broadcast_preview(ctx, "⏳ Transcription forcée...")
+
+    final_text = transcribe_production(ctx, audio)
+    broadcast_processing(ctx, False)  # Signal done
+
+    if final_text:
+        print(f"   📋 {final_text}")
+        paste_via_clipboard(ctx, final_text)
+        broadcast_preview(ctx, f"✅ {final_text}")
+    else:
+        print("   (pas de texte détecté)")
+        broadcast_preview(ctx, "")
+
+    buffer.clear()
+    phrase_detector.reset()
+    print("   ✅ Buffer vidé")
+
+
 # =============================================================================
 # Utility Functions
 # =============================================================================
@@ -391,9 +414,9 @@ def _print_visualizer_banner():
     """Print startup banner for visualizer-only mode."""
     print("🎙️ Visualiseur d'ondes actif... (Ctrl+C pour quitter)")
     print("   🌊 Mode visualisation uniquement (transcription désactivée)")
-    print("   🎤 F8 → Pause/Reprendre enregistrement")
-    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Basculer veille manuelle")
-    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s (auto-réveil si voix)")
+    print("   🎤 F8 → Pause/Reprendre micro (seulement si système actif)")
+    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Système ON/OFF (ouvre/ferme UI)")
+    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s = F9 OFF")
 
 
 def _print_transcription_banner():
@@ -407,6 +430,6 @@ def _print_transcription_banner():
         print("   📋 Modèle LARGE → Transcription directe au curseur")
         print("   🚫 Pas de prévisualisation (mode performance)")
 
-    print("   🎤 F8 → Pause/Reprendre enregistrement")
-    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Basculer veille manuelle")
-    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s (auto-réveil si voix)")
+    print("   🎤 F8 → Pause/Reprendre micro (force transcription si OFF)")
+    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Système ON/OFF (ouvre/ferme UI)")
+    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s = F9 OFF")

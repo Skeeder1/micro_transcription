@@ -93,7 +93,7 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
         class DebugPage(QWebEnginePage):
             def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
                 _ = level, sourceID  # Unused but required by signature
-                print(f"[JS] {message} (line {lineNumber})")
+                print(f"[JS] {message} (line {lineNumber})", flush=True)
 
         page = DebugPage(self._view)
         self._view.setPage(page)
@@ -139,9 +139,9 @@ class VisualizerEnhanced(QtWidgets.QMainWindow):
                 )
 
     def _on_load_finished(self, ok: bool) -> None:
-        print(f"[Load] Page loaded: {ok}")
+        print(f"[Load] Page loaded: {ok}", flush=True)
         if ok and not self._paused:
-            print("[Load] Starting visualizer bridge...")
+            print("[Load] Starting visualizer bridge...", flush=True)
             self._invoke_js("window.visualizerBridge && window.visualizerBridge.start();")
 
     def _setup_qt_bridge(self) -> None:

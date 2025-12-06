@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import Blueprint, Response
+from flask import Blueprint, Response, jsonify
 
 from api.server import event_stream, _CTX
 
@@ -17,6 +17,7 @@ def sse_endpoint() -> Response:
         raise RuntimeError("SSE context not initialised")
     response = Response(event_stream(_CTX), mimetype="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
+    response.headers["Connection"] = "keep-alive"
     response.headers["X-Accel-Buffering"] = "no"
     response.headers["Access-Control-Allow-Origin"] = "*"
     return response
@@ -26,3 +27,26 @@ def sse_endpoint() -> Response:
 def ping() -> str:
     """Healthcheck endpoint."""
     return "pong"
+
+
+@bp.route("/status")
+def status() -> Response:
+    """Get current system status for initial UI sync."""
+    if _CTX is None:
+        return jsonify({
+            "is_recording": False,
+            "is_sleeping": True
+        })
+
+    with _CTX.recording_lock:
+        is_recording = _CTX.is_recording
+
+    with _CTX.sleep_lock:
+        is_sleeping = _CTX.is_sleeping
+
+    response = jsonify({
+        "is_recording": is_recording,
+        "is_sleeping": is_sleeping
+    })
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response

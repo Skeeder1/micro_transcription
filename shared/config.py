@@ -77,8 +77,8 @@ from ui.config import (
 # ============================================================================
 
 # Délai d'inactivité avant activation automatique du mode veille en secondes
-# 10 secondes sans parole = passage en veille
-AUTO_SLEEP_SECONDS = 10.0
+# 30 secondes sans parole = passage en veille (équivalent à F9 OFF)
+AUTO_SLEEP_SECONDS = 30.0
 
 # Touche de raccourci pour basculer veille/actif
 # "F9" = Appui sur F9 pour activer/désactiver
@@ -93,8 +93,8 @@ HOTKEY_SEQUENCE_WINDOW = 0.6
 TOGGLE_COOLDOWN_SECONDS = 1.0
 
 # Durée en veille avant passage en veille profonde (décharge modèles)
-# 600 secondes = 10 minutes
-DEEP_SLEEP_SECONDS = 600
+# 1800 secondes = 30 minutes
+DEEP_SLEEP_SECONDS = 1800
 
 # Debug: active des logs additionnels pour diagnostiquer l'auto-veille
 # False = logs désactivés (comportement normal)

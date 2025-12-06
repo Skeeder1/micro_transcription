@@ -1,21 +1,18 @@
 /* Micro Transcription - Visualizer JavaScript */
-/* WaveSurfer.js waveform + VAD/Processing indicators via SSE */
+/* Custom Canvas Waveform with Web Audio API - bypasses WaveSurfer issues in QtWebEngine */
 
 (function() {
 'use strict';
 
 console.log('[Visualizer] Starting...');
 
-let RecordPlugin = null;
-let wavesurfer = null;
-let record = null;
-let eventSource = null;
-
+// ===========================================
 // DOM Elements
+// ===========================================
+
 const panel = document.querySelector('.panel');
 const recBtn = document.querySelector('#rec-btn');
 const recIcon = document.querySelector('.rec-icon');
-const micSelect = document.querySelector('#mic-select');
 const vadIndicator = document.querySelector('#vad-indicator');
 const processingIndicator = document.querySelector('#processing-indicator');
 const statusLabel = document.querySelector('#status');
@@ -23,8 +20,31 @@ const previewText = document.querySelector('#preview-text');
 const previewContainer = document.querySelector('#preview-container');
 const sseStatus = document.querySelector('#sse-status');
 const errorDiv = document.querySelector('#error');
+const waveformCanvas = document.querySelector('#waveform-canvas');
 
 console.log('[Visualizer] DOM elements selected');
+console.log('[Visualizer] Canvas element:', waveformCanvas ? 'found' : 'NOT FOUND');
+
+// ===========================================
+// Audio State
+// ===========================================
+
+let microphoneStream = null;
+let audioContext = null;
+let audioAnalyzer = null;
+let animationId = null;
+let isCapturing = false;
+
+// Waveform history for scrolling effect
+const HISTORY_LENGTH = 150;
+let waveformHistory = new Array(HISTORY_LENGTH).fill(0);
+
+// ===========================================
+// SSE State
+// ===========================================
+
+let eventSource = null;
+let sseReconnectTimer = null;
 
 // ===========================================
 // Status Management
@@ -50,6 +70,8 @@ const setStatus = (msg, type = 'normal') => {
 // ===========================================
 
 const updatePreview = (text) => {
+  if (!previewText || !previewContainer) return;
+
   if (!text || text.trim() === '') {
     previewText.textContent = 'En attente de parole...';
     previewText.classList.add('empty');
@@ -89,17 +111,21 @@ const handleStateChange = (state) => {
 const handleRecordingChange = (state) => {
   if (state === 'recording') {
     console.log('[Recording] Microphone active');
-    recBtn.classList.remove('rec-paused');
-    recBtn.classList.add('rec-active');
+    if (recBtn) {
+      recBtn.classList.remove('rec-paused');
+      recBtn.classList.add('rec-active');
+    }
     if (recIcon) recIcon.textContent = '🎤';
-    recBtn.title = 'Micro actif (F8 pour pause)';
+    if (recBtn) recBtn.title = 'Micro actif (F8 pour pause)';
     setStatus('Micro actif', 'active');
   } else if (state === 'paused') {
     console.log('[Recording] Microphone paused');
-    recBtn.classList.remove('rec-active');
-    recBtn.classList.add('rec-paused');
+    if (recBtn) {
+      recBtn.classList.remove('rec-active');
+      recBtn.classList.add('rec-paused');
+    }
     if (recIcon) recIcon.textContent = '⏸️';
-    recBtn.title = 'Micro en pause (F8 pour reprendre)';
+    if (recBtn) recBtn.title = 'Micro en pause (F8 pour reprendre)';
     setStatus('Micro en pause', 'warning');
   }
 };
@@ -107,10 +133,8 @@ const handleRecordingChange = (state) => {
 const handleVADChange = (state) => {
   if (!vadIndicator) return;
   if (state === 'active') {
-    console.log('[VAD] Voice detected');
     vadIndicator.classList.add('active');
   } else {
-    console.log('[VAD] Silence');
     vadIndicator.classList.remove('active');
   }
 };
@@ -145,11 +169,27 @@ const handleProcessingChange = (state) => {
 // SSE Connection
 // ===========================================
 
-const connectSSE = () => {
-  const ssePort = window.SSE_PORT || 5432;
-  console.log(`[SSE] Connecting to http://127.0.0.1:${ssePort}/events`);
+const closeSSE = () => {
+  if (sseReconnectTimer) {
+    clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = null;
+  }
+  if (eventSource) {
+    eventSource.onopen = null;
+    eventSource.onmessage = null;
+    eventSource.onerror = null;
+    eventSource.close();
+    eventSource = null;
+  }
+};
 
-  eventSource = new EventSource(`http://127.0.0.1:${ssePort}/events`);
+const connectSSE = () => {
+  closeSSE();
+
+  const ssePort = window.SSE_PORT || 5433;
+  console.log('[SSE] Connecting to http://127.0.0.1:' + ssePort + '/events');
+
+  eventSource = new EventSource('http://127.0.0.1:' + ssePort + '/events');
 
   eventSource.onopen = () => {
     console.log('[SSE] Connected');
@@ -179,118 +219,256 @@ const connectSSE = () => {
     console.error('[SSE] Error:', error);
     if (sseStatus) sseStatus.classList.remove('connected');
     setStatus('Reconnexion...', 'warning');
-    setTimeout(() => {
-      if (eventSource.readyState === EventSource.CLOSED) {
+
+    if (!sseReconnectTimer) {
+      sseReconnectTimer = setTimeout(() => {
+        sseReconnectTimer = null;
         console.log('[SSE] Reconnecting...');
         connectSSE();
-      }
-    }, 2000);
+      }, 3000);
+    }
   };
 };
 
 // ===========================================
-// WaveSurfer Setup
+// Initial State Sync
 // ===========================================
 
-const createWaveSurfer = () => {
-  if (record && (record.isRecording() || record.isPaused())) {
-    record.stopRecording();
-  }
-  if (wavesurfer) {
-    try {
-      wavesurfer.destroy();
-    } catch (e) {
-      console.warn('Error destroying wavesurfer:', e);
+const syncInitialState = async () => {
+  const ssePort = window.SSE_PORT || 5433;
+  try {
+    const resp = await fetch('http://127.0.0.1:' + ssePort + '/status');
+    if (resp.ok) {
+      const data = await resp.json();
+      console.log('[Init] Syncing state:', data);
+      handleRecordingChange(data.is_recording ? 'recording' : 'paused');
+      handleStateChange(data.is_sleeping ? 'sleep' : 'active');
     }
+  } catch (e) {
+    console.warn('[Init] Could not sync initial state:', e);
   }
-
-  wavesurfer = WaveSurfer.create({
-    container: '#mic',
-    waveColor: 'rgb(100, 200, 255)',
-    progressColor: 'rgb(50, 150, 255)',
-    cursorWidth: 0,
-    height: 90,
-    barWidth: 2,
-    barGap: 1,
-    barRadius: 2,
-  });
-
-  record = wavesurfer.registerPlugin(RecordPlugin.create({
-    renderRecordedAudio: false,
-    scrollingWaveform: true,
-    continuousWaveform: false,
-    scrollingWaveformWindow: 5,
-  }));
-
-  record.on('record-start', () => {
-    console.log('[Recorder] Recording started');
-    setStatus('Monitoring actif', 'active');
-  });
-
-  record.on('record-stop', () => {
-    console.log('[Recorder] Recording stopped');
-    setStatus('Monitoring arrete', 'warning');
-  });
 };
 
-const ensureDevices = async () => {
-  if (!micSelect) return true;
-  try {
-    const devices = await RecordPlugin.getAvailableAudioDevices();
-    micSelect.innerHTML = '<option value="" hidden>Micro</option>';
-    devices.forEach((device, index) => {
-      const option = document.createElement('option');
-      option.value = device.deviceId;
-      option.text = device.label || device.deviceId || ('Micro ' + (index + 1));
-      micSelect.appendChild(option);
-    });
-    if (devices.length && !micSelect.value) {
-      micSelect.value = devices[0].deviceId;
+// ===========================================
+// Canvas Waveform Setup
+// ===========================================
+
+const setupCanvas = () => {
+  if (!waveformCanvas) {
+    console.error('[Canvas] Canvas element not found!');
+    return false;
+  }
+
+  // Set actual canvas dimensions (not just CSS)
+  const rect = waveformCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  waveformCanvas.width = rect.width * dpr;
+  waveformCanvas.height = rect.height * dpr;
+
+  console.log('[Canvas] Initialized:', waveformCanvas.width, 'x', waveformCanvas.height, '(DPR:', dpr + ')');
+  return true;
+};
+
+const drawWaveform = () => {
+  if (!waveformCanvas) {
+    animationId = requestAnimationFrame(drawWaveform);
+    return;
+  }
+
+  const ctx = waveformCanvas.getContext('2d');
+  const width = waveformCanvas.width;
+  const height = waveformCanvas.height;
+  const dpr = window.devicePixelRatio || 1;
+
+  // Get frequency data if analyzer exists
+  if (audioAnalyzer) {
+    const bufferLength = audioAnalyzer.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    audioAnalyzer.getByteFrequencyData(dataArray);
+
+    // Calculate average level for current frame
+    let sum = 0;
+    for (let i = 0; i < bufferLength; i++) {
+      sum += dataArray[i];
     }
-    console.log('[Devices] Found ' + devices.length + ' audio devices');
-    return devices.length > 0;
+    const average = sum / bufferLength;
+
+    // Add to history (shift left, add new value at end)
+    waveformHistory.shift();
+    waveformHistory.push(average);
+  }
+
+  // Clear canvas
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, width, height);
+
+  // Draw waveform bars
+  const barWidth = width / HISTORY_LENGTH;
+  const barGap = 1 * dpr;
+  const actualBarWidth = Math.max(barWidth - barGap, 2);
+
+  for (let i = 0; i < HISTORY_LENGTH; i++) {
+    const value = waveformHistory[i];
+
+    // Normalize and amplify (0-255 -> 0-1, then scale)
+    const normalized = value / 255;
+    const amplified = Math.pow(normalized, 0.6) * 1.8;  // Amplify quieter sounds
+
+    // Calculate bar height (minimum 2px for visibility)
+    const barHeight = Math.max(amplified * height * 0.85, 2 * dpr);
+
+    // Position bar centered vertically
+    const x = i * barWidth;
+    const y = (height - barHeight) / 2;
+
+    // Color gradient based on intensity
+    const intensity = Math.min(normalized * 2.5, 1);
+    const r = Math.floor(100 + intensity * 155);  // 100 -> 255
+    const g = Math.floor(200 - intensity * 50);   // 200 -> 150
+    const b = Math.floor(255 - intensity * 100);  // 255 -> 155
+
+    ctx.fillStyle = 'rgb(' + r + ', ' + g + ', ' + b + ')';
+
+    // Draw rounded bar
+    ctx.beginPath();
+    const radius = Math.min(actualBarWidth / 2, 3 * dpr);
+    ctx.roundRect(x, y, actualBarWidth, barHeight, radius);
+    ctx.fill();
+  }
+
+  // Continue animation
+  animationId = requestAnimationFrame(drawWaveform);
+};
+
+// ===========================================
+// Audio Capture
+// ===========================================
+
+const startAudioCapture = async () => {
+  if (isCapturing) {
+    console.log('[Audio] Already capturing');
+    return true;
+  }
+
+  try {
+    console.log('[Audio] Requesting microphone access...');
+
+    // Close existing stream if any
+    if (microphoneStream) {
+      microphoneStream.getTracks().forEach(track => track.stop());
+      microphoneStream = null;
+    }
+
+    // Close existing audio context
+    if (audioContext) {
+      try {
+        await audioContext.close();
+      } catch (e) {
+        console.warn('[Audio] Error closing old context:', e);
+      }
+    }
+
+    // Request microphone access
+    microphoneStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        sampleRate: 48000,
+      }
+    });
+
+    const tracks = microphoneStream.getAudioTracks();
+    console.log('[Audio] Got stream with', tracks.length, 'audio tracks');
+
+    if (tracks.length > 0) {
+      const track = tracks[0];
+      console.log('[Audio] Track:', track.label);
+      console.log('[Audio] Track enabled:', track.enabled, 'muted:', track.muted);
+    }
+
+    // Create audio context and analyzer
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioContext.createMediaStreamSource(microphoneStream);
+
+    audioAnalyzer = audioContext.createAnalyser();
+    audioAnalyzer.fftSize = 256;
+    audioAnalyzer.smoothingTimeConstant = 0.4;
+
+    source.connect(audioAnalyzer);
+
+    console.log('[Audio] Analyzer created, FFT size:', audioAnalyzer.fftSize);
+    console.log('[Audio] Frequency bins:', audioAnalyzer.frequencyBinCount);
+
+    // Diagnostic: verify audio levels periodically
+    let diagCount = 0;
+    const diagInterval = setInterval(() => {
+      if (!audioAnalyzer || diagCount >= 5) {
+        clearInterval(diagInterval);
+        return;
+      }
+      diagCount++;
+
+      const dataArray = new Uint8Array(audioAnalyzer.frequencyBinCount);
+      audioAnalyzer.getByteFrequencyData(dataArray);
+      const avg = dataArray.reduce((a, b) => a + b) / dataArray.length;
+      const max = Math.max.apply(null, dataArray);
+
+      console.log('[Audio] Level check #' + diagCount + ': avg=' + avg.toFixed(1) + ', max=' + max);
+
+      if (avg < 1 && diagCount >= 3) {
+        console.warn('[Audio] WARNING: Very low audio levels - check microphone');
+      }
+    }, 1000);
+
+    isCapturing = true;
+    console.log('[Audio] Capture started successfully');
+    return true;
+
   } catch (err) {
-    showError('Erreur acces peripheriques: ' + err.message);
+    console.error('[Audio] Error getting microphone:', err);
+    showError('Erreur micro: ' + err.message);
     return false;
   }
 };
 
-const startRecording = async () => {
-  if (!record) {
-    showError('Record plugin non initialise');
-    return;
-  }
-  if (record.isRecording()) {
-    console.log('[Recorder] Already recording');
-    return;
-  }
-  try {
-    const deviceId = micSelect ? micSelect.value : undefined;
-    console.log('[Recorder] Starting recording with deviceId:', deviceId);
-    await record.startRecording({ deviceId });
-    console.log('[Recorder] Recording started successfully');
-  } catch (err) {
-    showError('Erreur demarrage: ' + err.message);
-  }
-};
+const stopAudioCapture = () => {
+  isCapturing = false;
 
-const stopRecording = () => {
-  if (record && record.isRecording()) {
+  if (animationId) {
+    cancelAnimationFrame(animationId);
+    animationId = null;
+  }
+
+  if (audioContext) {
     try {
-      record.stopRecording();
+      audioContext.close();
     } catch (e) {
-      console.warn('[Recorder] Error stopping recording:', e);
+      console.warn('[Audio] Error closing context:', e);
     }
+    audioContext = null;
+    audioAnalyzer = null;
   }
-};
 
-const toggleRecording = () => {
-  if (!record) return;
-  if (record.isRecording()) {
-    stopRecording();
-  } else {
-    startRecording();
+  if (microphoneStream) {
+    microphoneStream.getTracks().forEach(track => {
+      track.stop();
+      console.log('[Audio] Stopped track:', track.label);
+    });
+    microphoneStream = null;
   }
+
+  // Clear waveform history
+  waveformHistory = new Array(HISTORY_LENGTH).fill(0);
+
+  // Clear canvas
+  if (waveformCanvas) {
+    const ctx = waveformCanvas.getContext('2d');
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+  }
+
+  console.log('[Audio] Capture stopped');
 };
 
 // ===========================================
@@ -311,34 +489,32 @@ const initialize = async () => {
       console.warn('[Init] Qt WebChannel not available');
     }
 
-    if (typeof WaveSurfer === 'undefined') {
-      showError('WaveSurfer non charge');
+    // Setup canvas
+    if (!setupCanvas()) {
+      showError('Canvas non trouve');
       return;
     }
 
-    // Get RecordPlugin from WaveSurfer global
-    RecordPlugin = WaveSurfer.Record;
-    if (!RecordPlugin) {
-      showError('RecordPlugin non charge');
+    // Start audio capture
+    console.log('[Init] Starting audio capture...');
+    const success = await startAudioCapture();
+
+    if (!success) {
+      showError('Impossible d\'acceder au microphone');
       return;
     }
 
-    console.log('[Init] WaveSurfer and RecordPlugin loaded');
+    // Start waveform animation
+    console.log('[Init] Starting waveform animation...');
+    drawWaveform();
 
-    createWaveSurfer();
-
-    const hasDevice = await ensureDevices();
-    if (!hasDevice) {
-      showError('Aucun micro detecte');
-      return;
-    }
-
-    console.log('[Init] Starting auto-record...');
-    await startRecording();
-
+    // Connect SSE
     connectSSE();
 
-    console.log('[Init] Initialization complete');
+    // Sync initial state from backend
+    await syncInitialState();
+
+    console.log('[Init] Initialization complete - waveform should be visible!');
 
   } catch (err) {
     showError('Init error: ' + err.message);
@@ -351,29 +527,53 @@ const initialize = async () => {
 // ===========================================
 
 window.visualizerBridge = {
-  start: startRecording,
-  stop: stopRecording,
-  toggle: toggleRecording,
-  refreshDevices: ensureDevices,
+  start: async () => {
+    if (isCapturing) {
+      console.log('[Bridge] Already capturing');
+      return;
+    }
+    const success = await startAudioCapture();
+    if (success && !animationId) {
+      drawWaveform();
+    }
+  },
+  stop: stopAudioCapture,
   updatePreview: updatePreview,
+  toggle: () => {
+    if (isCapturing) {
+      stopAudioCapture();
+    } else {
+      window.visualizerBridge.start();
+    }
+  }
 };
 
 // ===========================================
 // Start
 // ===========================================
 
-if (typeof WaveSurfer !== 'undefined') {
-  initialize();
-} else {
-  window.addEventListener('load', () => {
-    setTimeout(initialize, 500);
+// Wait for DOM to be ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(initialize, 100);
   });
+} else {
+  setTimeout(initialize, 100);
 }
 
-window.addEventListener('beforeunload', () => {
-  if (eventSource) {
-    eventSource.close();
+// Handle window resize
+window.addEventListener('resize', () => {
+  if (waveformCanvas) {
+    setupCanvas();
   }
+});
+
+// Cleanup on close
+window.addEventListener('beforeunload', () => {
+  console.log('[Cleanup] Page unloading...');
+  stopAudioCapture();
+  closeSSE();
+  console.log('[Cleanup] Done');
 });
 
 })(); // End IIFE

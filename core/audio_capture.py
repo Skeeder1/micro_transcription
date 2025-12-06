@@ -22,21 +22,26 @@ if TYPE_CHECKING:
 _keyboard_controller = pynput_keyboard.Controller()
 
 
-def _detect_linux_environment() -> tuple[str, bool]:
+def _detect_linux_environment() -> tuple[str, bool, bool]:
     """
     Detect Linux display server environment.
 
     Returns:
-        Tuple of (environment_type, xdotool_available)
+        Tuple of (environment_type, xdotool_available, xwayland_available)
         environment_type: "X11", "Wayland", or "unknown"
+        xdotool_available: True if xdotool command exists
+        xwayland_available: True if DISPLAY is set (XWayland works)
     """
     if sys.platform != "linux":
-        return ("unknown", False)
+        return ("unknown", False, False)
 
-    # Check for Wayland
-    if os.environ.get("WAYLAND_DISPLAY"):
+    # Detect environment type
+    is_wayland = bool(os.environ.get("WAYLAND_DISPLAY"))
+    has_display = bool(os.environ.get("DISPLAY"))
+
+    if is_wayland:
         env_type = "Wayland"
-    elif os.environ.get("DISPLAY"):
+    elif has_display:
         env_type = "X11"
     else:
         env_type = "unknown"
@@ -48,7 +53,10 @@ def _detect_linux_environment() -> tuple[str, bool]:
         stderr=subprocess.DEVNULL
     ).returncode == 0
 
-    return (env_type, xdotool_available)
+    # XWayland is available if DISPLAY is set (even under Wayland)
+    xwayland_available = has_display and xdotool_available
+
+    return (env_type, xdotool_available, xwayland_available)
 
 
 def make_audio_callback(ctx: AppContext):
@@ -58,14 +66,17 @@ def make_audio_callback(ctx: AppContext):
         if status:
             print(f"⚠️ Audio status: {status}")
 
-        # PRIORITÉ 1: Pause manuelle F8 → ignorer complètement l'audio
+        # PRIORITÉ 1: Système en veille (F9 OFF) → ignorer tout audio
+        with ctx.sleep_lock:
+            if ctx.is_sleeping:
+                return  # Système OFF: ignorer complètement
+
+        # PRIORITÉ 2: Pause manuelle F8 → ignorer l'audio
         with ctx.recording_lock:
             if not ctx.is_recording:
-                return  # Pause F8: ignorer tout audio, pas d'auto-réveil
+                return  # Pause F8: ignorer tout audio
 
-        # PRIORITÉ 2: Si enregistrement actif (F8 ON), capturer l'audio
-        # MÊME en veille auto-sleep (pour permettre auto-réveil par détection voix)
-        # Note: le processor gère la distinction sleep/actif et l'auto-wake
+        # Enregistrement actif → capturer l'audio
         ctx.audio_queue.put(indata.copy())
 
     return _callback
@@ -113,18 +124,35 @@ def _paste_linux_xdotool(text: str) -> bool:
         True if successful, False otherwise
     """
     try:
+        # Ensure DISPLAY is set for XWayland
+        env = os.environ.copy()
+        if "DISPLAY" not in env:
+            env["DISPLAY"] = ":0"
+
+        # Small delay to let focus stabilize
+        time.sleep(0.05)
+
         # Use xdotool to type the text directly (more reliable than clipboard)
         # --clearmodifiers ensures clean state (no stuck Shift/Ctrl)
-        # --delay controls typing speed (0 = instant)
+        # --delay 1 adds tiny delay between chars for reliability
         result = subprocess.run(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", text],
+            ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", text],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=10,
+            env=env
         )
+        if result.returncode != 0:
+            print(f"⚠️ xdotool stderr: {result.stderr}", flush=True)
         return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as exc:
-        print(f"⚠️ Erreur xdotool: {exc}")
+    except subprocess.TimeoutExpired:
+        print("⚠️ xdotool timeout (10s)", flush=True)
+        return False
+    except FileNotFoundError:
+        print("⚠️ xdotool non trouvé", flush=True)
+        return False
+    except Exception as exc:
+        print(f"⚠️ Erreur xdotool: {exc}", flush=True)
         return False
 
 
@@ -211,25 +239,23 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
 
     # Platform-specific paste logic
     if sys.platform == "linux":
-        env_type, xdotool_available = _detect_linux_environment()
+        env_type, xdotool_available, xwayland_available = _detect_linux_environment()
 
-        if env_type == "X11" and xdotool_available:
-            # Best method for Linux X11: direct typing with xdotool
-            print(f"[Paste] Utilisation xdotool (X11) pour coller {len(payload)} caracteres")
+        # Use xdotool if available - works on X11 AND via XWayland under Wayland
+        if xwayland_available:
+            method = "XWayland" if env_type == "Wayland" else "X11"
+            print(f"[Paste] Utilisation xdotool ({method}) pour coller {len(payload)} caractères", flush=True)
             success = _paste_linux_xdotool(payload)
 
             if not success:
                 # Fallback to clipboard method
-                print("[Paste] Fallback: xdotool clipboard method")
+                print("[Paste] Fallback: xdotool clipboard method", flush=True)
                 success = _paste_linux_clipboard(payload)
         else:
-            # Wayland or xdotool not available
-            if env_type == "Wayland":
-                print(f"[Paste] Environnement Wayland detecte, utilisation pynput")
-            else:
-                print(f"[Paste] xdotool non disponible, utilisation pynput")
+            # No xdotool or no DISPLAY - use pynput as last resort
+            print(f"[Paste] Environnement {env_type}, xdotool indisponible, utilisation pynput", flush=True)
 
-            # Use pynput as fallback (works on Wayland with some limitations)
+            # Use pynput as fallback (limited on Wayland)
             try:
                 pyperclip.copy(payload)
                 time.sleep(0.1)
