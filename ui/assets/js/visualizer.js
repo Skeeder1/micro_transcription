@@ -13,9 +13,8 @@ console.log('[Visualizer] Starting...');
 const panel = document.querySelector('.panel');
 const recBtn = document.querySelector('#rec-btn');
 const recIcon = document.querySelector('.rec-icon');
-const vadIndicator = document.querySelector('#vad-indicator');
-const processingIndicator = document.querySelector('#processing-indicator');
 const statusLabel = document.querySelector('#status');
+const statusSpinner = document.querySelector('#status-spinner');
 const previewText = document.querySelector('#preview-text');
 const previewContainer = document.querySelector('#preview-container');
 const sseStatus = document.querySelector('#sse-status');
@@ -114,6 +113,8 @@ const handleRecordingChange = (state) => {
     if (recBtn) {
       recBtn.classList.remove('rec-paused');
       recBtn.classList.add('rec-active');
+      // Reset VAD state to inactive when starting (will be updated by VAD events)
+      recBtn.classList.add('vad-inactive');
     }
     if (recIcon) recIcon.textContent = '🎤';
     if (recBtn) recBtn.title = 'Micro actif (F8 pour pause)';
@@ -122,6 +123,8 @@ const handleRecordingChange = (state) => {
     console.log('[Recording] Microphone paused');
     if (recBtn) {
       recBtn.classList.remove('rec-active');
+      recBtn.classList.remove('vad-active');
+      recBtn.classList.remove('vad-inactive');
       recBtn.classList.add('rec-paused');
     }
     if (recIcon) recIcon.textContent = '⏸️';
@@ -131,19 +134,21 @@ const handleRecordingChange = (state) => {
 };
 
 const handleVADChange = (state) => {
-  if (!vadIndicator) return;
-  if (state === 'active') {
-    vadIndicator.classList.add('active');
-  } else {
-    vadIndicator.classList.remove('active');
+  // Update mic button VAD state (blue vif = VAD active, gris-bleu = VAD inactive)
+  if (recBtn) {
+    if (state === 'active') {
+      recBtn.classList.remove('vad-inactive');
+      recBtn.classList.add('vad-active');
+    } else {
+      recBtn.classList.remove('vad-active');
+      recBtn.classList.add('vad-inactive');
+    }
   }
 };
 
 let processingTimeout = null;
 
 const handleProcessingChange = (state) => {
-  if (!processingIndicator) return;
-
   if (processingTimeout) {
     clearTimeout(processingTimeout);
     processingTimeout = null;
@@ -151,16 +156,18 @@ const handleProcessingChange = (state) => {
 
   if (state === 'start') {
     console.log('[Processing] Transcription started');
-    processingIndicator.classList.add('active');
+    // Show spinner next to status
+    if (statusSpinner) statusSpinner.classList.remove('hidden');
     setStatus('Transcription...', 'active');
     processingTimeout = setTimeout(() => {
       console.warn('[Processing] Timeout - forcing reset');
-      processingIndicator.classList.remove('active');
+      if (statusSpinner) statusSpinner.classList.add('hidden');
       setStatus('Actif', 'active');
     }, 30000);
   } else if (state === 'done') {
     console.log('[Processing] Transcription complete');
-    processingIndicator.classList.remove('active');
+    // Hide spinner
+    if (statusSpinner) statusSpinner.classList.add('hidden');
     setStatus('Actif', 'active');
   }
 };
