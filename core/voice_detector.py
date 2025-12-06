@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.request
 from typing import Optional, Tuple
 
 import numpy as np
@@ -21,6 +22,11 @@ from shared.exceptions import ModelLoadError
 # =============================================================================
 # Constants
 # =============================================================================
+
+# Silero VAD model - téléchargé une seule fois, chargé localement ensuite
+SILERO_MODEL_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.jit"
+SILERO_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", ".cache")
+SILERO_MODEL_PATH = os.path.join(SILERO_MODEL_DIR, "silero_vad.jit")
 
 # Calibration settings
 CALIBRATION_CHUNKS = 10  # Number of chunks for initial calibration (~5s at 0.5s/chunk)
@@ -119,36 +125,60 @@ class VoiceDetector:
     # Model Management
     # =========================================================================
 
+    def _download_model(self) -> bool:
+        """Download Silero VAD model if not present locally."""
+        if os.path.exists(SILERO_MODEL_PATH):
+            return True
+
+        try:
+            # Create cache directory
+            os.makedirs(SILERO_MODEL_DIR, exist_ok=True)
+
+            print("📥 Téléchargement Silero VAD (première fois uniquement)...")
+            urllib.request.urlretrieve(SILERO_MODEL_URL, SILERO_MODEL_PATH)
+            print("   ✅ Modèle téléchargé et sauvegardé localement")
+            return True
+
+        except Exception as e:
+            print(f"⚠️ Échec téléchargement Silero VAD: {e}")
+            return False
+
     def _load_model(self) -> None:
-        """Load Silero VAD model (lazy initialization)."""
+        """Load Silero VAD model from local file."""
         if self._model_loaded:
             return
 
         try:
-            torch.hub.set_dir(
-                os.path.join(os.path.dirname(__file__), "..", ".cache", "torch")
-            )
+            # Download if not present
+            if not self._download_model():
+                self._model_loaded = False
+                return
 
-            model, _ = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=False,
-                onnx=False,
-            )
-
-            self._model = model
-            self._model_loaded = True
+            # Load model from local JIT file (instantané!)
+            self._model = torch.jit.load(SILERO_MODEL_PATH)
             self._model.eval()
+            self._model_loaded = True
 
             print(
-                f"✅ Silero VAD chargé "
-                f"(sample_rate={self.sample_rate}, threshold={self.silero_threshold})"
+                f"✅ Silero VAD chargé (local) "
+                f"(threshold={self.silero_threshold})"
             )
 
         except Exception as e:
             print(f"⚠️ Échec chargement Silero VAD: {e}")
             print("   → Mode dégradé: utilisation RMS uniquement")
             self._model_loaded = False
+
+    def preload_model(self) -> None:
+        """
+        Preload Silero VAD model at startup.
+
+        Call this during application initialization to avoid
+        delay on first voice detection.
+        """
+        if not self._model_loaded:
+            print("📥 Préchargement Silero VAD...")
+            self._load_model()
 
     def unload_model(self) -> None:
         """Unload Silero VAD model to free memory."""
@@ -157,6 +187,30 @@ class VoiceDetector:
             self._model = None
             self._model_loaded = False
             print("🗑️ Silero VAD déchargé")
+
+    def skip_calibration_on_wake(self) -> None:
+        """
+        Skip calibration when waking from sleep (F9).
+
+        Keeps previous calibration values if they exist.
+        """
+        if self._noise_floor > 0:
+            # Already calibrated before - keep existing values
+            self._is_calibrating = False
+            print("⚡ Réveil rapide - calibration précédente conservée")
+        # Si jamais calibré, la calibration normale se fera au premier audio
+
+    def start_calibration(self) -> None:
+        """
+        Start/restart calibration (called on F8 pause).
+
+        Recalibrates the noise floor while microphone is paused.
+        """
+        self._is_calibrating = True
+        self._calibration_count = 0
+        self._rms_history.clear()
+        self._max_calibration_count = CALIBRATION_CHUNKS
+        print("🎯 Calibration démarrée (pendant pause micro)...")
 
     # =========================================================================
     # Audio Analysis (using shared utilities)
@@ -404,7 +458,7 @@ class VoiceDetector:
 
         Steps:
         1. Update reference level (always, for calibration)
-        2. Check if calibrating (reject all during calibration)
+        2. If calibrating, continue detection with previous values
         3. Dynamic RMS floor check (reject near-noise-floor)
         4. Check boost factor
         5. Silero VAD confirmation
@@ -413,12 +467,12 @@ class VoiceDetector:
         # Always update reference level first (needed for calibration)
         self._update_reference_level(self._last_rms)
 
-        # During calibration, reject everything but keep collecting samples
+        # During calibration, continue with previous values (non-blocking)
         if self._is_calibrating:
             if debug:
                 remaining = self._max_calibration_count - self._calibration_count
-                print(f"[VAD] CALIBRATION: {remaining} chunks restants (RMS={self._last_rms:.6f})...")
-            return False
+                print(f"[VAD] CALIBRATION: {remaining} chunks restants (utilise config précédente)...")
+            # Continue detection with current thresholds (don't block)
 
         # Step 1: Dynamic RMS floor check
         # Use the calibrated threshold based on actual noise floor

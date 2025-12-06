@@ -87,7 +87,7 @@ def detect_activity(
     voice_detector: Optional[VoiceDetector] = None
 ) -> bool:
     """
-    Detect voice activity using advanced VAD or legacy RMS.
+    Detect voice activity using advanced VAD or legacy RMS + ZCR.
 
     Args:
         audio_block: Audio chunk to analyze
@@ -101,16 +101,37 @@ def detect_activity(
         debug = getattr(config, "DEBUG_VAD", False)
         return voice_detector.is_human_speech(audio_block, debug=debug)
 
-    # Legacy mode: simple RMS threshold
-    rms = float(np.sqrt(np.mean(np.square(audio_block), dtype=np.float64)))
+    # Legacy mode: RMS threshold + optional ZCR filter
+    from shared.audio_utils import calculate_zcr
+
+    # Flatten audio if needed
+    audio_flat = audio_block.squeeze() if audio_block.ndim > 1 else audio_block
+
+    rms = float(np.sqrt(np.mean(np.square(audio_flat), dtype=np.float64)))
+    is_above_threshold = rms > config.ENERGY_THRESHOLD
+
+    # Apply ZCR filter if enabled (distinguishes speech from noise)
+    use_zcr = getattr(config, "USE_ZCR_FILTER", False)
+    zcr_valid = True
+
+    if use_zcr and is_above_threshold:
+        zcr = calculate_zcr(audio_flat)
+        zcr_min = getattr(config, "ZCR_MIN", 0.02)
+        zcr_max = getattr(config, "ZCR_MAX", 0.30)
+        zcr_valid = zcr_min <= zcr <= zcr_max
+
+    is_active = is_above_threshold and zcr_valid
 
     # Mode debug pour diagnostiquer les problèmes de détection
     if getattr(config, "DEBUG_AUDIO_LEVEL", False):
-        is_active = rms > config.ENERGY_THRESHOLD
-        status = "✓ ACTIVE" if is_active else "  silent"
+        if use_zcr and is_above_threshold:
+            zcr = calculate_zcr(audio_flat)
+            status = "✓ VOICE" if is_active else f"✗ NOISE (ZCR={zcr:.3f})"
+        else:
+            status = "✓ ACTIVE" if is_active else "  silent"
         print(f"\r[AUDIO] RMS={rms:.6f} threshold={config.ENERGY_THRESHOLD} → {status}", end="", flush=True)
 
-    return rms > config.ENERGY_THRESHOLD
+    return is_active
 
 
 def _paste_linux_xdotool(text: str) -> bool:

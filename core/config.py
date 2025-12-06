@@ -26,13 +26,16 @@ ENABLE_PRODUCTION = True
 SAMPLE_RATE = 16000
 
 # Durée de chaque bloc audio capturé en secondes
+# 0.25s = Réactivité VAD améliorée (250ms de latence)
+# 0.5s = Valeur par défaut (plus stable mais 500ms de latence)
 BLOCK_SECONDS = 0.5
 
 # Seuil d'énergie pour détecter de la parole (0.001-0.01 recommandé)
 # Plus bas = plus sensible, détecte les chuchotements
+# 0.004 = ultra sensible, laisse Silero VAD filtrer
 # 0.008 = très sensible, détecte parole normale
 # 0.015 = réduit bruit ambiant, empêche détection continue
-ENERGY_THRESHOLD = 0.008
+ENERGY_THRESHOLD = 0.004  # Réduit pour laisser Silero VAD gérer le filtrage
 
 # Nombre de blocs silencieux avant de finaliser la transcription
 # 5 blocs * 0.5s = 2.5 secondes de silence minimum
@@ -47,15 +50,14 @@ SILENCE_BLOCKS_BEFORE_FLUSH = 5
 # Active la détection avancée voix/bruit avec Silero VAD
 # True = Utilise Silero VAD + ZCR pour distinguer voix du bruit ambiant
 # False = Utilise uniquement le seuil RMS basique (mode legacy)
-# TEMPORAIREMENT DÉSACTIVÉ: Silero renvoie des probabilités très faibles
-ENABLE_ADVANCED_VAD = False
+ENABLE_ADVANCED_VAD = True
 
 # Seuil de probabilité Silero VAD (0.0-1.0)
-# 0.15 = Très sensible (détecte même parole faible, nécessite boost RMS)
-# 0.3 = Sensible (détecte chuchotements, peut avoir faux positifs)
-# 0.5 = Équilibré (recommandé si micro de bonne qualité)
-# 0.7 = Strict (rejette plus de bruit, peut manquer parole faible)
-SILERO_THRESHOLD = 0.15  # Réduit car micro renvoie proba faibles
+# 0.1 = Ultra sensible (capture tout ce qui ressemble à de la voix)
+# 0.2 = Très sensible (capture parole faible)
+# 0.3 = Sensible (détecte chuchotements)
+# 0.5 = Équilibré (peut couper parole intermittente)
+SILERO_THRESHOLD = 0.1  # Sensible
 
 # Active le filtre Zero Crossing Rate (ZCR)
 # True = Filtre additionnel pour rejeter bruit blanc/sifflement

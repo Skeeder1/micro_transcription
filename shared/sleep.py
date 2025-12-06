@@ -103,6 +103,10 @@ def activate_system(ctx: AppContext) -> None:
                 ctx.is_deep_sleeping = True
             return
 
+    # Skip VAD recalibration if already calibrated before
+    if ctx.voice_detector is not None:
+        ctx.voice_detector.skip_calibration_on_wake()
+
     # Start visualizer
     print("   → Démarrage visualizer...")
     start_visualizer(ctx)
@@ -246,8 +250,13 @@ def toggle_recording(ctx: AppContext) -> bool:
     if new_state:
         # F8 ON - Resume recording
         print("\n🎤 MICRO ACTIVÉ (F8 ON)")
+
+        # Start calibration when resuming from pause
+        if ctx.voice_detector is not None:
+            ctx.voice_detector.start_calibration()
+
         broadcast_recording(ctx, True)
-        broadcast_preview(ctx, "🎤 Micro actif - Parlez...")
+        broadcast_preview(ctx, "🎯 Calibration en cours...")
     else:
         # F8 OFF - Pause recording + force transcription
         print("\n⏸️ MICRO EN PAUSE (F8 OFF)")

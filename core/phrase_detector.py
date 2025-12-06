@@ -32,9 +32,10 @@ MIN_AUDIO_SAMPLES_FOR_PITCH = 512  # Minimum samples needed for pitch detection
 ENERGY_EPSILON = 1e-10  # Minimum energy to avoid division by zero
 
 # Phrase end detection thresholds
-SILENCE_BLOCKS_DEFINITE = 3  # Definite phrase end after this many silent blocks
-SILENCE_BLOCKS_WITH_ENERGY = 2  # Phrase end with energy drop
-SILENCE_BLOCKS_WITH_PITCH = 1  # Phrase end with energy + pitch drop
+# Avec BLOCK_SECONDS = 0.5s : 5 blocs = 2.5s de silence avant flush
+SILENCE_BLOCKS_DEFINITE = 5  # Definite phrase end after this many silent blocks
+SILENCE_BLOCKS_WITH_ENERGY = 5  # Phrase end with energy drop
+SILENCE_BLOCKS_WITH_PITCH = 5  # Phrase end with energy + pitch drop
 
 
 class PhraseEndDetector:

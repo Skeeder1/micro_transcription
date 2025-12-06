@@ -95,6 +95,8 @@ def run() -> int:
                     adaptive_boost_factor=getattr(config, "ADAPTIVE_BOOST_FACTOR", 2.5),
                     adaptive_window_seconds=getattr(config, "ADAPTIVE_WINDOW_SECONDS", 3.0),
                 )
+                # Précharger le modèle Silero VAD immédiatement (évite délai au premier F9)
+                ctx.voice_detector.preload_model()
                 if use_adaptive:
                     log_info(f"   → Mode adaptatif: boost={getattr(config, 'ADAPTIVE_BOOST_FACTOR', 2.5)}x")
                     log_info("   → Calibration automatique du bruit ambiant (2 premières secondes)")

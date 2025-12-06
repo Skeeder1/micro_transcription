@@ -139,6 +139,106 @@ def unload_models(ctx: AppContext) -> None:
         log_info("   ✅ Mémoire libérée")
 
 
+# =============================================================================
+# Filtre anti-hallucinations Whisper
+# =============================================================================
+
+# Phrases typiques que Whisper génère quand il reçoit du bruit/silence
+HALLUCINATION_PATTERNS = [
+    # Sous-titres YouTube/TV
+    "sous-titrage",
+    "sous-titres",
+    "société radio-canada",
+    "radio-canada",
+    "sous-titres par",
+    "sous-titrage st",
+
+    # Remerciements vidéo
+    "merci d'avoir regardé",
+    "merci d'avoir écouté",
+    "merci à mes tipeurs",
+    "merci à mes souscripteurs",
+    "n'hésitez pas à vous abonner",
+    "abonnez-vous",
+    "likez la vidéo",
+    "laissez un commentaire",
+    "à bientôt",
+    "à la prochaine",
+
+    # Musique/Son
+    "musique",
+    "♪",
+    "applaudissements",
+    "rires",
+    "silence",
+
+    # Phrases génériques vides
+    "...",
+    "je vous remercie",
+    "c'est tout pour aujourd'hui",
+    "bonne journée",
+    "bonne soirée",
+
+    # Anglais courant
+    "thank you for watching",
+    "thanks for watching",
+    "subscribe",
+    "like and subscribe",
+]
+
+
+def _is_hallucination(text: str) -> bool:
+    """
+    Vérifie si le texte est une hallucination typique de Whisper.
+
+    Args:
+        text: Texte transcrit
+
+    Returns:
+        True si c'est probablement une hallucination
+    """
+    if not text:
+        return True
+
+    text_lower = text.lower().strip()
+
+    # Vérifie si le texte contient un pattern d'hallucination
+    for pattern in HALLUCINATION_PATTERNS:
+        if pattern in text_lower:
+            print(f"[Filter] Hallucination détectée: '{pattern}' dans '{text[:50]}...'")
+            return True
+
+    # Texte répétitif (même mot/phrase répété)
+    words = text_lower.split()
+    if len(words) >= 4:
+        # Si plus de 60% des mots sont identiques, c'est suspect
+        unique_words = set(words)
+        if len(unique_words) / len(words) < 0.4:
+            print(f"[Filter] Texte répétitif détecté: '{text[:50]}...'")
+            return True
+
+    return False
+
+
+def _filter_hallucinations(text: Optional[str]) -> Optional[str]:
+    """
+    Filtre les hallucinations de la transcription.
+
+    Args:
+        text: Texte transcrit
+
+    Returns:
+        Texte filtré ou None si hallucination
+    """
+    if text is None:
+        return None
+
+    if _is_hallucination(text):
+        return None
+
+    return text
+
+
 def _flatten(audio: np.ndarray) -> np.ndarray:
     return audio.flatten()
 
@@ -192,7 +292,8 @@ def transcribe_preview(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
         init_models(ctx)
     if ctx.model is None:
         return None
-    return _run_transcription(ctx.model, audio)
+    text = _run_transcription(ctx.model, audio)
+    return _filter_hallucinations(text)
 
 
 def transcribe_production(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
@@ -201,4 +302,5 @@ def transcribe_production(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
         init_models(ctx)
     if ctx.model is None:
         return None
-    return _run_transcription(ctx.model, audio)
+    text = _run_transcription(ctx.model, audio)
+    return _filter_hallucinations(text)
