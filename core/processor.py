@@ -3,25 +3,55 @@ Main audio processing loop.
 
 Orchestrates the audio capture, voice detection, and transcription pipeline
 using modular components for better maintainability.
+
+This module uses dependency injection via the ServiceRegistry for decoupled
+communication with the UI layer through the IBroadcaster interface.
+
+Phase 4 Integration:
+- Uses ServiceRegistry for broadcaster access (IBroadcaster)
+- Publishes events via EventBus for all state transitions
+- Applies error handling decorators for robust transcription
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from queue import Empty
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 
 from shared import config
+from shared.constants import (
+    LOG_PREFIX_DIAG,
+    LOG_PREFIX_FORCE_FLUSH,
+    DIAGNOSTIC_INTERVAL_SECONDS,
+)
+from shared.events import EventBus, Events
+from shared.interfaces import IBroadcaster
+from shared.logger import log_info, log_warn, log_error
+from shared.errors import handle_errors
+from shared.service_utils import get_broadcaster
 from .audio_capture import detect_activity, paste_via_clipboard
 from .audio_preprocessing import preprocess_audio
 from .models import transcribe_preview, transcribe_production
 from .phrase_detector import PhraseEndDetector
-from .pipeline import AudioBuffer, PreviewManager, ProductionManager
 
 if TYPE_CHECKING:
     from shared.context import AppContext
+
+
+def _clear_line() -> None:
+    """Clear current console line for real-time updates."""
+    sys.stdout.write("\r" + " " * 80 + "\r")
+    sys.stdout.flush()
+
+
+def _print_realtime(message: str) -> None:
+    """Print real-time status without newline (for console feedback)."""
+    sys.stdout.write(f"\r{message}")
+    sys.stdout.flush()
 
 
 # =============================================================================
@@ -35,22 +65,23 @@ def run(ctx: AppContext) -> None:
     This is the main entry point for the audio processing loop.
     Handles both visualizer-only and full transcription modes.
     """
-    # Late imports to avoid circular dependencies
+    # Import sleep functions (still needed as they contain business logic)
     from shared.sleep import (
         check_auto_sleep, check_deep_sleep, check_visualizer_closed,
         is_sleeping, update_speech_timer
     )
-    from api.server import broadcast_preview, broadcast_vad, broadcast_processing
+
+    # Get broadcaster from service registry (replaces api.server imports)
+    broadcaster = get_broadcaster()
 
     if not config.ENABLE_TRANSCRIPTION:
         _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                             check_visualizer_closed, is_sleeping, update_speech_timer,
-                            broadcast_vad)
+                            broadcaster)
     else:
         _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                                check_visualizer_closed, is_sleeping,
-                               update_speech_timer, broadcast_preview,
-                               broadcast_vad, broadcast_processing)
+                               update_speech_timer, broadcaster)
 
 
 # =============================================================================
@@ -59,7 +90,7 @@ def run(ctx: AppContext) -> None:
 
 def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                          check_visualizer_closed, is_sleeping, update_speech_timer,
-                         broadcast_vad):
+                         broadcaster: Optional[IBroadcaster]):
     """
     Run in visualizer-only mode (no transcription).
 
@@ -92,7 +123,13 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
             # Detect voice and broadcast VAD state changes
             is_voice = detect_activity(audio_block, ctx.voice_detector)
             if is_voice != was_voice:
-                broadcast_vad(ctx, is_voice)
+                if broadcaster:
+                    broadcaster.send_vad(ctx, is_voice)
+                # Publish voice detection event
+                if is_voice:
+                    EventBus.publish(Events.VOICE_DETECTED, is_voice=True)
+                else:
+                    EventBus.publish(Events.SILENCE_DETECTED, is_voice=False)
                 was_voice = is_voice
 
             # Update speech timer on voice activity
@@ -100,7 +137,7 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
                 update_speech_timer(ctx)
 
     except KeyboardInterrupt:
-        print("\n👋 Arrêt...")
+        log_info("Arrêt du visualiseur...")
 
 
 # =============================================================================
@@ -109,8 +146,7 @@ def _run_visualizer_only(ctx, check_auto_sleep, check_deep_sleep,
 
 def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                            check_visualizer_closed, is_sleeping,
-                           update_speech_timer, broadcast_preview,
-                           broadcast_vad, broadcast_processing):
+                           update_speech_timer, broadcaster: Optional[IBroadcaster]):
     """
     Run full transcription mode with preview and production pipelines.
 
@@ -148,14 +184,13 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
     diag_voice_count = 0
     diag_silence_count = 0
     diag_last_report = time.time()
-    DIAG_INTERVAL = 5.0  # Report every 5 seconds
+    DIAG_INTERVAL = DIAGNOSTIC_INTERVAL_SECONDS  # Report interval from constants
 
     try:
         while True:
             # Check force_flush flag (set by F8 OFF or F9 OFF)
             if ctx.force_flush:
-                _force_flush_buffer(ctx, buffer, phrase_detector,
-                                   broadcast_preview, broadcast_processing)
+                _force_flush_buffer(ctx, buffer, phrase_detector, broadcaster)
                 ctx.force_flush = False  # Clear flag
 
             # Throttled sleep checks
@@ -178,7 +213,13 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             # Detect voice activity and broadcast VAD state changes
             is_voice = detect_activity(audio_block, ctx.voice_detector)
             if is_voice != was_voice:
-                broadcast_vad(ctx, is_voice)
+                if broadcaster:
+                    broadcaster.send_vad(ctx, is_voice)
+                # Publish voice detection event
+                if is_voice:
+                    EventBus.publish(Events.VOICE_DETECTED, is_voice=True)
+                else:
+                    EventBus.publish(Events.SILENCE_DETECTED, is_voice=False)
                 was_voice = is_voice
 
             phrase_detector.update(audio_block, not is_voice)
@@ -195,10 +236,12 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
                 total = diag_voice_count + diag_silence_count
                 voice_pct = (diag_voice_count / total * 100) if total > 0 else 0
                 delta_speech = now - ctx.last_speech_time
-                print(f"\n[DIAG] Voix: {diag_voice_count} ({voice_pct:.0f}%) | "
-                      f"Silence: {diag_silence_count} | "
-                      f"Buffer: {len(buffer._production)} blocks | "
-                      f"Depuis parole: {delta_speech:.1f}s", flush=True)
+                log_info(
+                    f"{LOG_PREFIX_DIAG} Voix: {diag_voice_count} ({voice_pct:.0f}%) | "
+                    f"Silence: {diag_silence_count} | "
+                    f"Buffer: {len(buffer._production)} blocks | "
+                    f"Depuis parole: {delta_speech:.1f}s"
+                )
                 diag_voice_count = 0
                 diag_silence_count = 0
                 diag_last_report = now
@@ -206,17 +249,83 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             if is_voice:
                 _handle_voice_activity(
                     ctx, audio_block, buffer, phrase_detector,
-                    preview_manager, update_speech_timer, broadcast_preview,
-                    broadcast_processing
+                    preview_manager, update_speech_timer, broadcaster
                 )
             else:
                 _handle_silence(
-                    ctx, buffer, phrase_detector, production_manager,
-                    broadcast_preview, broadcast_processing
+                    ctx, buffer, phrase_detector, production_manager, broadcaster
                 )
 
     except KeyboardInterrupt:
-        _handle_shutdown(ctx, buffer, broadcast_preview, broadcast_processing)
+        _handle_shutdown(ctx, buffer, broadcaster)
+
+
+# =============================================================================
+# Common Transcription Logic (deduplicated)
+# =============================================================================
+
+@handle_errors(log_prefix="[Transcribe]", reraise=False, default_return=None)
+def _transcribe_and_paste(
+    ctx,
+    audio: "np.ndarray",
+    broadcaster: Optional[IBroadcaster],
+    status_message: str = "Transcription...",
+    log_prefix: str = "[Transcription]"
+) -> Optional[str]:
+    """
+    Common transcription and paste logic.
+
+    Extracted to eliminate code duplication across:
+    - _flush_production_overflow
+    - _flush_production
+    - _force_flush_buffer
+    - _handle_shutdown
+
+    Args:
+        ctx: Application context
+        audio: Raw audio data (will be preprocessed)
+        broadcaster: Optional broadcaster for UI updates
+        status_message: Message to show during transcription
+        log_prefix: Prefix for log messages
+
+    Returns:
+        Transcribed text or None if no text detected
+    """
+    # Signal start
+    if broadcaster:
+        broadcaster.send_processing(ctx, True)
+
+    # Preprocess audio
+    audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
+
+    # Show status
+    _clear_line()
+    if broadcaster:
+        broadcaster.send_preview(ctx, status_message)
+
+    # Publish transcription started event
+    EventBus.publish(Events.TRANSCRIPTION_STARTED)
+
+    # Run transcription
+    final_text = transcribe_production(ctx, audio)
+
+    # Signal done
+    if broadcaster:
+        broadcaster.send_processing(ctx, False)
+
+    # Handle result
+    if final_text:
+        log_info(f"{log_prefix} {final_text}")
+        paste_via_clipboard(ctx, final_text)
+        if broadcaster:
+            broadcaster.send_preview(ctx, final_text)
+        # Publish transcription complete event
+        EventBus.publish(Events.TRANSCRIPTION_COMPLETE, text=final_text)
+    else:
+        if broadcaster:
+            broadcaster.send_preview(ctx, "")
+
+    return final_text
 
 
 # =============================================================================
@@ -224,68 +333,71 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
 # =============================================================================
 
 def _handle_voice_activity(ctx, audio_block, buffer, phrase_detector,
-                           preview_manager, update_speech_timer, broadcast_preview,
-                           broadcast_processing):
+                           preview_manager, update_speech_timer,
+                           broadcaster: Optional[IBroadcaster]):
     """Handle audio block when voice is detected."""
     buffer.add_voice_audio(audio_block)
     update_speech_timer(ctx)
 
     # Check for buffer overflow
     if buffer.is_production_overflow:
-        _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
+        _flush_production_overflow(ctx, buffer, phrase_detector, broadcaster)
         return
 
     # Update preview if enabled
     if config.ENABLE_PREVIEW and preview_manager.should_update():
-        _update_preview(ctx, buffer, preview_manager, broadcast_preview)
+        _update_preview(ctx, buffer, preview_manager, broadcaster)
 
 
-def _flush_production_overflow(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
+def _flush_production_overflow(ctx, buffer, phrase_detector,
+                               broadcaster: Optional[IBroadcaster]):
     """Handle production buffer overflow."""
-    print(f"\n⚠️ Buffer limit ({getattr(config, 'MAX_PRODUCTION_SECONDS', 30)}s) - forcing transcription...")
+    log_warn(f"Buffer limit ({getattr(config, 'MAX_PRODUCTION_SECONDS', 30)}s) - forcing transcription...")
+    # Publish buffer overflow event
+    EventBus.publish(Events.AUDIO_BUFFER_FULL)
 
     audio = buffer.get_production_audio()
     if audio is not None:
-        broadcast_processing(ctx, True)  # Signal start
-        audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
-
-        print("\r" + " " * 80 + "\r", end="", flush=True)
-        broadcast_preview(ctx, "⏳ Transcription...")
-
-        final_text = transcribe_production(ctx, audio)
-        broadcast_processing(ctx, False)  # Signal done
-
-        if final_text:
-            print(f"📋 {final_text}")
-            paste_via_clipboard(ctx, final_text)
-            broadcast_preview(ctx, f"✅ {final_text}")
-        else:
-            broadcast_preview(ctx, "")
+        _transcribe_and_paste(
+            ctx, audio, broadcaster,
+            status_message="Transcription (overflow)...",
+            log_prefix="[Overflow]"
+        )
 
     buffer.clear()
     phrase_detector.reset()
 
 
-def _update_preview(ctx, buffer, preview_manager, broadcast_preview):
+def _update_preview(ctx, buffer, preview_manager,
+                    broadcaster: Optional[IBroadcaster]):
     """Update preview transcription."""
     audio = buffer.get_preview_audio()
     if audio is None:
         return
 
     audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=False)
+
+    # Create a wrapper function for the preview manager
+    def send_preview(ctx, text):
+        if broadcaster:
+            broadcaster.send_preview(ctx, text)
+
     preview_text = preview_manager.execute_preview(
-        ctx, audio, transcribe_preview, broadcast_preview
+        ctx, audio, transcribe_preview, send_preview
     )
 
     if preview_text:
-        print(f"\r💬 {preview_text}", end="", flush=True)
+        _print_realtime(f"Preview: {preview_text}")
+        # Publish preview updated event
+        EventBus.publish(Events.PREVIEW_UPDATED, text=preview_text)
 
 
 # =============================================================================
 # Silence Handling
 # =============================================================================
 
-def _handle_silence(ctx, buffer, phrase_detector, production_manager, broadcast_preview, broadcast_processing):
+def _handle_silence(ctx, buffer, phrase_detector, production_manager,
+                    broadcaster: Optional[IBroadcaster]):
     """Handle audio block when silence is detected."""
     if not config.ENABLE_PRODUCTION or not buffer.has_production_audio:
         return
@@ -296,36 +408,28 @@ def _handle_silence(ctx, buffer, phrase_detector, production_manager, broadcast_
     should_flush = production_manager.should_flush(buffer, phrase_detector, is_silent=True)
 
     if should_flush:
-        _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing)
+        _flush_production(ctx, buffer, phrase_detector, broadcaster)
 
 
-def _flush_production(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
+def _flush_production(ctx, buffer, phrase_detector,
+                      broadcaster: Optional[IBroadcaster]):
     """Flush production buffer and transcribe."""
     audio = buffer.get_production_audio()
     if audio is None:
         return
 
-    broadcast_processing(ctx, True)  # Signal start
-    audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
-
-    print("\r" + " " * 80 + "\r", end="", flush=True)
-    broadcast_preview(ctx, "⏳ Transcription...")
-
-    final_text = transcribe_production(ctx, audio)
-    broadcast_processing(ctx, False)  # Signal done
-
-    if final_text:
-        print(f"📋 {final_text}")
-        paste_via_clipboard(ctx, final_text)
-        broadcast_preview(ctx, f"✅ {final_text}")
-    else:
-        broadcast_preview(ctx, "")
+    _transcribe_and_paste(
+        ctx, audio, broadcaster,
+        status_message="Transcription...",
+        log_prefix="[Production]"
+    )
 
     buffer.clear()
     phrase_detector.reset()
 
 
-def _force_flush_buffer(ctx, buffer, phrase_detector, broadcast_preview, broadcast_processing):
+def _force_flush_buffer(ctx, buffer, phrase_detector,
+                        broadcaster: Optional[IBroadcaster]):
     """
     Force immediate transcription of buffered audio.
 
@@ -333,34 +437,27 @@ def _force_flush_buffer(ctx, buffer, phrase_detector, broadcast_preview, broadca
     whatever audio is currently in the buffer.
     """
     if not buffer.has_production_audio:
-        print("[ForceFlush] Pas d'audio en buffer, skip")
+        log_info(f"{LOG_PREFIX_FORCE_FLUSH} Pas d'audio en buffer, skip")
         return
 
-    print("\n⚡ TRANSCRIPTION FORCÉE (F8/F9 OFF)")
+    log_info(f"{LOG_PREFIX_FORCE_FLUSH} TRANSCRIPTION FORCÉE (F8/F9 OFF)")
 
     audio = buffer.get_production_audio()
     if audio is None:
         return
 
-    broadcast_processing(ctx, True)  # Signal start
-    audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
+    result = _transcribe_and_paste(
+        ctx, audio, broadcaster,
+        status_message="Transcription forcée...",
+        log_prefix=LOG_PREFIX_FORCE_FLUSH
+    )
 
-    broadcast_preview(ctx, "⏳ Transcription forcée...")
-
-    final_text = transcribe_production(ctx, audio)
-    broadcast_processing(ctx, False)  # Signal done
-
-    if final_text:
-        print(f"   📋 {final_text}")
-        paste_via_clipboard(ctx, final_text)
-        broadcast_preview(ctx, f"✅ {final_text}")
-    else:
-        print("   (pas de texte détecté)")
-        broadcast_preview(ctx, "")
+    if not result:
+        log_info(f"{LOG_PREFIX_FORCE_FLUSH} Pas de texte détecté")
 
     buffer.clear()
     phrase_detector.reset()
-    print("   ✅ Buffer vidé")
+    log_info(f"{LOG_PREFIX_FORCE_FLUSH} Buffer vidé")
 
 
 # =============================================================================
@@ -388,48 +485,41 @@ def _get_audio_block(ctx):
         return None
 
 
-def _handle_shutdown(ctx, buffer, broadcast_preview, broadcast_processing):
+def _handle_shutdown(ctx, buffer, broadcaster: Optional[IBroadcaster]):
     """Handle graceful shutdown with pending audio."""
     if config.ENABLE_PRODUCTION and buffer.has_production_audio:
-        print("\r" + " " * 80 + "\r", end="", flush=True)
-
         audio = buffer.get_production_audio()
         if audio is not None:
-            broadcast_processing(ctx, True)  # Signal start
-            audio = preprocess_audio(audio, sample_rate=config.SAMPLE_RATE, for_production=True)
-            final_text = transcribe_production(ctx, audio)
-            broadcast_processing(ctx, False)  # Signal done
-            if final_text:
-                print(f"📋 {final_text}")
-                paste_via_clipboard(ctx, final_text)
+            _transcribe_and_paste(
+                ctx, audio, broadcaster,
+                status_message="Transcription finale...",
+                log_prefix="[Shutdown]"
+            )
 
-    print("\n👋 Arrêt...")
+    log_info("Arrêt du système de transcription...")
 
 
 # =============================================================================
 # Banner Messages
 # =============================================================================
 
-def _print_visualizer_banner():
-    """Print startup banner for visualizer-only mode."""
-    print("🎙️ Visualiseur d'ondes actif... (Ctrl+C pour quitter)")
-    print("   🌊 Mode visualisation uniquement (transcription désactivée)")
-    print("   🎤 F8 → Pause/Reprendre micro (seulement si système actif)")
-    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Système ON/OFF (ouvre/ferme UI)")
-    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s = F9 OFF")
+def _print_visualizer_banner() -> None:
+    """Log startup banner for visualizer-only mode."""
+    log_info("Visualiseur d'ondes actif (Ctrl+C pour quitter)")
+    log_info("  Mode: Visualisation uniquement (transcription désactivée)")
+    log_info("  F8: Pause/Reprendre micro | F9: Système ON/OFF")
+    log_info(f"  Veille auto après {config.AUTO_SLEEP_SECONDS}s")
 
 
-def _print_transcription_banner():
-    """Print startup banner for transcription mode."""
+def _print_transcription_banner() -> None:
+    """Log startup banner for transcription mode."""
     if config.ENABLE_PREVIEW:
-        print("🎙️ Écoute active... (Ctrl+C pour quitter)")
-        print("   💬 Preview → Visualiseur (temps réel)")
-        print("   📋 Production → Curseur (modèle large)")
+        log_info("Écoute active (Ctrl+C pour quitter)")
+        log_info("  Preview: Visualiseur (temps réel)")
+        log_info("  Production: Curseur (modèle large)")
     else:
-        print("🎙️ Transcription directe active... (Ctrl+C pour quitter)")
-        print("   📋 Modèle LARGE → Transcription directe au curseur")
-        print("   🚫 Pas de prévisualisation (mode performance)")
+        log_info("Transcription directe active (Ctrl+C pour quitter)")
+        log_info("  Modèle LARGE -> Transcription directe au curseur")
 
-    print("   🎤 F8 → Pause/Reprendre micro (force transcription si OFF)")
-    print(f"   💤 {config.HOTKEY_TOGGLE.upper()} → Système ON/OFF (ouvre/ferme UI)")
-    print(f"   ⏰ Veille auto après {config.AUTO_SLEEP_SECONDS}s = F9 OFF")
+    log_info("  F8: Pause/Reprendre micro | F9: Système ON/OFF")
+    log_info(f"  Veille auto après {config.AUTO_SLEEP_SECONDS}s")

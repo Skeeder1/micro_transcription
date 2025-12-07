@@ -1,4 +1,13 @@
-"""Core transcription engine - Application bootstrap and orchestration."""
+"""Core transcription engine - Application bootstrap and orchestration.
+
+This module is the main entry point for the transcription system. It orchestrates
+all components: audio capture, VAD, transcription, visualization, and hotkeys.
+
+Phase 4 Integration:
+- Uses ServiceRegistry for dependency injection (IBroadcaster)
+- Publishes system events via EventBus
+- Applies error handling decorators for robust operation
+"""
 
 from __future__ import annotations
 
@@ -7,7 +16,7 @@ import sys
 import threading
 import time
 import urllib.request
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import sounddevice as sd
 
@@ -16,11 +25,17 @@ from shared.context import AppContext
 from shared.hotkey import HotkeyManager
 from shared.sleep import toggle_sleep_mode, toggle_recording
 from shared.logger import init_logger, log_info, log_warn, log_error
-from api.server import broadcast_preview, broadcast_recording, start_server
+from shared.events import EventBus, Events
+from shared.interfaces import ServiceRegistry, IBroadcaster
+from shared.errors import handle_errors, retry, ModelLoadError
+from shared.service_utils import get_broadcaster, broadcast_preview_safe
+from api.server import start_server
 from ui.manager import start_visualizer, stop_visualizer
 from core.audio_capture import make_audio_callback
 from core.models import init_models
 from core.processor import run as run_main_loop
+
+
 
 # System tray support (optional)
 try:
@@ -32,7 +47,9 @@ except ImportError:
     is_system_tray_available = lambda: False  # type: ignore
 
 
+@handle_errors(log_prefix="[Audio]", reraise=True)
 def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManager:
+    """Configure and return the audio input stream."""
     blocksize = int(config.SAMPLE_RATE * config.BLOCK_SECONDS)
     callback = make_audio_callback(ctx)
     return sd.InputStream(
@@ -42,6 +59,12 @@ def _configure_audio_stream(ctx: AppContext) -> contextlib.AbstractContextManage
         blocksize=blocksize,
         callback=callback,
     )
+
+
+@retry(max_attempts=2, delay=1.0, exceptions=(Exception,))
+def _load_whisper_models(ctx: AppContext) -> None:
+    """Load Whisper models with retry on failure."""
+    init_models(ctx)
 
 
 def run() -> int:
@@ -177,21 +200,23 @@ def run() -> int:
     if config.ENABLE_TRANSCRIPTION:
         # Charger les modèles en ARRIÈRE-PLAN pendant que l'UI est visible
         models_ready = threading.Event()
-        models_error: list[Optional[Exception]] = [None]  # Liste pour stocker l'erreur éventuelle
+        models_error: list[Optional[Exception]] = [None]
 
-        def load_models_async():
+        def load_models_async() -> None:
             try:
                 log_info("📥 Chargement modèles en arrière-plan...")
-                broadcast_preview(ctx, f"⏳ Chargement modèle Whisper '{config.WHISPER_MODEL}'...")
-                broadcast_preview(ctx, "   Cela peut prendre quelques secondes...")
-                init_models(ctx)
-                broadcast_preview(ctx, "✅ Modèles chargés - Système prêt!")
+                broadcast_preview_safe(ctx, f"⏳ Chargement modèle Whisper '{config.WHISPER_MODEL}'...")
+                broadcast_preview_safe(ctx, "   Cela peut prendre quelques secondes...")
+                _load_whisper_models(ctx)  # With retry
+                broadcast_preview_safe(ctx, "✅ Modèles chargés - Système prêt!")
                 log_info("✅ Chargement des modèles terminé avec succès")
                 models_ready.set()
             except Exception as exc:
                 log_error(f"❌ Impossible de charger les modèles Whisper: {exc}")
-                broadcast_preview(ctx, f"❌ ERREUR: Échec du chargement des modèles - {str(exc)[:100]}")
+                broadcast_preview_safe(ctx, f"❌ ERREUR: Échec du chargement des modèles - {str(exc)[:100]}")
                 models_error[0] = exc
+                # Publish failure event
+                EventBus.publish(Events.TRANSCRIPTION_FAILED, error=str(exc))
                 models_ready.set()
 
         threading.Thread(target=load_models_async, daemon=True, name="ModelLoader").start()
@@ -202,16 +227,20 @@ def run() -> int:
 
         if models_error[0] is not None:
             log_error("❌ Échec chargement modèles, arrêt...")
+            EventBus.publish(Events.SYSTEM_DEACTIVATED)
             hotkey.stop()
             stop_visualizer(ctx)
             ctx.shutdown()
             return 1
 
         log_info("🔊 Système prêt - Parlez maintenant!")
+        # Publish system ready event
+        EventBus.publish(Events.SYSTEM_ACTIVATED)
     else:
         # Mode visualiseur uniquement - pas besoin d'attendre
         log_info("🌊 Mode visualiseur actif - Prêt immédiatement!")
-        broadcast_preview(ctx, "🌊 Visualiseur prêt (transcription désactivée)")
+        broadcast_preview_safe(ctx, "🌊 Visualiseur prêt (transcription désactivée)")
+        EventBus.publish(Events.SYSTEM_ACTIVATED)
 
     # Démarrer la capture audio
     log_info("🎤 Démarrage capture audio...")
@@ -242,10 +271,12 @@ def run() -> int:
             run_main_loop(ctx)
     except KeyboardInterrupt:
         log_info("\n⏹️ Interruption utilisateur")
+        EventBus.publish(Events.SYSTEM_DEACTIVATED)
     except Exception as exc:
         log_error(f"❌ Erreur inattendue: {exc}")
         import traceback
         log_error(traceback.format_exc())
+        EventBus.publish(Events.SYSTEM_DEACTIVATED)
         return 1
     finally:
         hotkey.stop()

@@ -6,14 +6,34 @@ F8 = Micro ON/OFF (seulement si système ON)
 Auto-sleep après 30s = équivalent à F9 OFF
 Deep sleep après 30min = décharge les modèles
 Auto-wake = SUPPRIMÉ
+
+This module uses the ServiceRegistry for decoupled broadcasting
+and the EventBus for publishing state change events.
+
+Phase 4 Integration:
+- Uses ServiceRegistry for IBroadcaster access
+- Publishes events via EventBus for all state transitions
+- Error handling decorators for robust state management
 """
 
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING, Optional
 
 from shared import config
+from shared.constants import (
+    LOG_PREFIX_ACTIVATE,
+    LOG_PREFIX_DEACTIVATE,
+    LOG_PREFIX_TOGGLE,
+    LOG_PREFIX_AUTOSLEEP,
+)
 from shared.context import AppContext
+from shared.events import EventBus, Events
+from shared.interfaces import IBroadcaster
+from shared.logger import log_info, log_warn, log_error
+from shared.errors import handle_errors
+from shared.service_utils import get_broadcaster
 
 
 # =============================================================================
@@ -42,6 +62,7 @@ def is_recording(ctx: AppContext) -> bool:
 # F9 - System ON/OFF Control
 # =============================================================================
 
+@handle_errors(log_prefix=LOG_PREFIX_ACTIVATE, reraise=False)
 def activate_system(ctx: AppContext) -> None:
     """
     F9 ON: Activate complete system.
@@ -52,15 +73,18 @@ def activate_system(ctx: AppContext) -> None:
     4. Enable recording (F8 ON by default)
     5. Broadcast state "active"
     """
+    # Late imports for modules that may have circular dependencies
     from core.models import init_models
-    from api.server import broadcast_preview, broadcast_state, broadcast_recording
     from ui.manager import start_visualizer
     from queue import Empty
+
+    # Get broadcaster from registry
+    broadcaster = get_broadcaster()
 
     # Check if already active
     with ctx.sleep_lock:
         if not ctx.is_sleeping:
-            print("[Activate] Déjà actif, skip")
+            log_info(f"{LOG_PREFIX_ACTIVATE} Déjà actif, skip")
             return
         was_deep_sleeping = ctx.is_deep_sleeping
         # Exit sleep state
@@ -82,21 +106,26 @@ def activate_system(ctx: AppContext) -> None:
         pass
 
     if cleared_blocks > 0:
-        print(f"[Activate] Queue audio vidée ({cleared_blocks} blocs)")
+        log_info(f"{LOG_PREFIX_ACTIVATE} Queue audio vidée ({cleared_blocks} blocs)")
 
-    print("\n🔊 SYSTÈME ACTIVÉ (F9 ON)")
+    log_info(f"{LOG_PREFIX_ACTIVATE} SYSTÈME ACTIVÉ (F9 ON)")
+
+    # Publish activation event
+    EventBus.publish(Events.SYSTEM_ACTIVATED)
 
     if was_deep_sleeping:
         # Reload models from deep sleep
-        print("   → Rechargement des modèles IA...")
-        broadcast_preview(ctx, "⏳ Rechargement modèles IA...")
+        log_info(f"{LOG_PREFIX_ACTIVATE} Rechargement des modèles IA...")
+        if broadcaster:
+            broadcaster.send_preview(ctx, "Rechargement modèles IA...")
 
         try:
             init_models(ctx)
-            print("   ✅ Modèles rechargés")
+            log_info(f"{LOG_PREFIX_ACTIVATE} Modèles rechargés")
         except Exception as exc:
-            print(f"   ❌ Erreur rechargement: {exc}")
-            broadcast_preview(ctx, "❌ Erreur rechargement - Redémarrez")
+            log_error(f"{LOG_PREFIX_ACTIVATE} Erreur rechargement: {exc}")
+            if broadcaster:
+                broadcaster.send_preview(ctx, "Erreur rechargement - Redémarrez")
             # Restore sleep state on error
             with ctx.sleep_lock:
                 ctx.is_sleeping = True
@@ -108,21 +137,23 @@ def activate_system(ctx: AppContext) -> None:
         ctx.voice_detector.skip_calibration_on_wake()
 
     # Start visualizer
-    print("   → Démarrage visualizer...")
+    log_info(f"{LOG_PREFIX_ACTIVATE} Démarrage visualizer...")
     start_visualizer(ctx)
     time.sleep(config.VISUALIZER_START_DELAY)
 
     # Enable recording by default
     ctx.audio.set_recording(True)
 
-    # Broadcast states
-    broadcast_state(ctx, "active")
-    broadcast_recording(ctx, True)
-    broadcast_preview(ctx, "🔊 Système actif - Parlez maintenant!")
+    # Broadcast states via registry
+    if broadcaster:
+        broadcaster.send_state(ctx, "active")
+        broadcaster.send_recording(ctx, True)
+        broadcaster.send_preview(ctx, "Système actif - Parlez maintenant!")
 
-    print("   ✅ Système prêt - Parlez!")
+    log_info(f"{LOG_PREFIX_ACTIVATE} Système prêt")
 
 
+@handle_errors(log_prefix=LOG_PREFIX_DEACTIVATE, reraise=False)
 def deactivate_system(ctx: AppContext) -> None:
     """
     F9 OFF: Deactivate complete system.
@@ -133,14 +164,17 @@ def deactivate_system(ctx: AppContext) -> None:
     4. Enter sleep mode
     5. Broadcast state "sleep"
     """
-    from api.server import broadcast_preview, broadcast_state, broadcast_recording
+    # Late imports for modules that may have circular dependencies
     from ui.manager import stop_visualizer
     from queue import Empty
+
+    # Get broadcaster from registry
+    broadcaster = get_broadcaster()
 
     # Check if already sleeping
     with ctx.sleep_lock:
         if ctx.is_sleeping:
-            print("[Deactivate] Déjà en veille, skip")
+            log_info(f"{LOG_PREFIX_DEACTIVATE} Déjà en veille, skip")
             return
         # Enter sleep state
         ctx.is_sleeping = True
@@ -151,7 +185,10 @@ def deactivate_system(ctx: AppContext) -> None:
     # Reset speech timer to prevent any auto-wake edge cases
     ctx.last_speech_time = 0
 
-    print("\n💤 SYSTÈME DÉSACTIVÉ (F9 OFF)")
+    log_info(f"{LOG_PREFIX_DEACTIVATE} SYSTÈME DÉSACTIVÉ (F9 OFF)")
+
+    # Publish deactivation event
+    EventBus.publish(Events.SYSTEM_DEACTIVATED)
 
     # Signal force flush to processor (transcribe what's in buffer)
     ctx.force_flush = True
@@ -167,7 +204,8 @@ def deactivate_system(ctx: AppContext) -> None:
 
     # Disable recording
     ctx.audio.set_recording(False)
-    broadcast_recording(ctx, False)
+    if broadcaster:
+        broadcaster.send_recording(ctx, False)
 
     # Clear audio queue
     cleared_blocks = 0
@@ -179,18 +217,19 @@ def deactivate_system(ctx: AppContext) -> None:
         pass
 
     if cleared_blocks > 0:
-        print(f"   Queue audio vidée ({cleared_blocks} blocs)")
+        log_info(f"{LOG_PREFIX_DEACTIVATE} Queue audio vidée ({cleared_blocks} blocs)")
 
     # Close visualizer
-    print("   → Fermeture visualizer...")
+    log_info(f"{LOG_PREFIX_DEACTIVATE} Fermeture visualizer...")
     stop_visualizer(ctx)
 
-    # Broadcast state
-    broadcast_state(ctx, "sleep")
-    broadcast_preview(ctx, "💤 Mode veille - Appuyez sur F9")
+    # Broadcast state via registry
+    if broadcaster:
+        broadcaster.send_state(ctx, "sleep")
+        broadcaster.send_preview(ctx, "Mode veille - Appuyez sur F9")
 
-    print("   Appuyez sur F9 pour réactiver")
-    print(f"   Veille profonde dans {config.DEEP_SLEEP_SECONDS / 60:.0f} minutes...")
+    log_info(f"{LOG_PREFIX_DEACTIVATE} Appuyez sur F9 pour réactiver")
+    log_info(f"{LOG_PREFIX_DEACTIVATE} Veille profonde dans {config.DEEP_SLEEP_SECONDS / 60:.0f} minutes...")
 
 
 def toggle_sleep_mode(ctx: AppContext) -> None:
@@ -199,18 +238,18 @@ def toggle_sleep_mode(ctx: AppContext) -> None:
     time_since_toggle = current_time - ctx.last_toggle_time
 
     if time_since_toggle < config.TOGGLE_COOLDOWN_SECONDS:
-        print(
-            f"[Toggle] Cooldown actif ({time_since_toggle:.2f}s < {config.TOGGLE_COOLDOWN_SECONDS}s) - Ignoré"
+        log_info(
+            f"{LOG_PREFIX_TOGGLE} Cooldown actif ({time_since_toggle:.2f}s < {config.TOGGLE_COOLDOWN_SECONDS}s) - Ignoré"
         )
         return
 
     ctx.last_toggle_time = current_time
-    print(f"[Toggle] F9 pressed at {time.strftime('%H:%M:%S', time.localtime(current_time))}")
+    log_info(f"{LOG_PREFIX_TOGGLE} F9 pressed at {time.strftime('%H:%M:%S', time.localtime(current_time))}")
 
     with ctx.sleep_lock:
         sleeping = ctx.is_sleeping
 
-    print(f"[Toggle] État: {'VEILLE' if sleeping else 'ACTIF'} → {'ACTIF' if sleeping else 'VEILLE'}")
+    log_info(f"{LOG_PREFIX_TOGGLE} État: {'VEILLE' if sleeping else 'ACTIF'} -> {'ACTIF' if sleeping else 'VEILLE'}")
 
     try:
         if sleeping:
@@ -218,7 +257,7 @@ def toggle_sleep_mode(ctx: AppContext) -> None:
         else:
             deactivate_system(ctx)
     except Exception as exc:
-        print(f"❌ Erreur toggle: {exc}")
+        log_error(f"{LOG_PREFIX_TOGGLE} Erreur toggle: {exc}")
         ctx.last_toggle_time = 0.0
 
 
@@ -238,28 +277,36 @@ def toggle_recording(ctx: AppContext) -> bool:
         bool: New recording state (True = recording, False = paused)
         Returns current state if system is OFF (no toggle)
     """
-    from api.server import broadcast_recording, broadcast_preview
+    # Get broadcaster from registry
+    broadcaster = get_broadcaster()
 
     # Check if system is active - F8 ignored when system OFF
     if not is_system_active(ctx):
-        print("[F8] Système en veille - F8 ignoré")
+        log_info("[F8] Système en veille - F8 ignoré")
         return ctx.is_recording
 
     new_state = ctx.audio.toggle_recording()
 
     if new_state:
         # F8 ON - Resume recording
-        print("\n🎤 MICRO ACTIVÉ (F8 ON)")
+        log_info("[F8] MICRO ACTIVÉ (F8 ON)")
+
+        # Publish recording started event
+        EventBus.publish(Events.RECORDING_STARTED)
 
         # Start calibration when resuming from pause
         if ctx.voice_detector is not None:
             ctx.voice_detector.start_calibration()
 
-        broadcast_recording(ctx, True)
-        broadcast_preview(ctx, "🎯 Calibration en cours...")
+        if broadcaster:
+            broadcaster.send_recording(ctx, True)
+            broadcaster.send_preview(ctx, "Calibration en cours...")
     else:
         # F8 OFF - Pause recording + force transcription
-        print("\n⏸️ MICRO EN PAUSE (F8 OFF)")
+        log_info("[F8] MICRO EN PAUSE (F8 OFF)")
+
+        # Publish recording stopped event
+        EventBus.publish(Events.RECORDING_STOPPED)
 
         # Signal force flush to processor
         ctx.force_flush = True
@@ -276,8 +323,9 @@ def toggle_recording(ctx: AppContext) -> bool:
         # Clear audio queue
         ctx.audio.clear_queue()
 
-        broadcast_recording(ctx, False)
-        broadcast_preview(ctx, "⏸️ Micro en pause - F8 pour reprendre")
+        if broadcaster:
+            broadcaster.send_recording(ctx, False)
+            broadcaster.send_preview(ctx, "Micro en pause - F8 pour reprendre")
 
     return new_state
 
@@ -303,14 +351,14 @@ def check_auto_sleep(ctx: AppContext) -> None:
         check_auto_sleep._last_log = 0.0
 
     if time.time() - check_auto_sleep._last_log > 5.0:
-        print(f"[AutoSleep] Delta: {delta:.1f}s / {config.AUTO_SLEEP_SECONDS:.1f}s")
+        log_info(f"{LOG_PREFIX_AUTOSLEEP} Delta: {delta:.1f}s / {config.AUTO_SLEEP_SECONDS:.1f}s")
         check_auto_sleep._last_log = time.time()
 
     if getattr(config, "DEBUG_AUTO_SLEEP", False):
-        print(f"[DEBUG] time since last speech: {delta:.2f}s (auto_sleep={config.AUTO_SLEEP_SECONDS}s)")
+        log_info(f"{LOG_PREFIX_AUTOSLEEP} [DEBUG] time since last speech: {delta:.2f}s (auto_sleep={config.AUTO_SLEEP_SECONDS}s)")
 
     if delta > config.AUTO_SLEEP_SECONDS:
-        print(f"\n⏰ Inactivité détectée ({config.AUTO_SLEEP_SECONDS}s)")
+        log_info(f"{LOG_PREFIX_AUTOSLEEP} Inactivité détectée ({config.AUTO_SLEEP_SECONDS}s)")
         # Auto-sleep = equivalent to F9 OFF
         deactivate_system(ctx)
 
@@ -321,25 +369,29 @@ def check_auto_sleep(ctx: AppContext) -> None:
 
 def enter_deep_sleep_mode(ctx: AppContext) -> None:
     """Enter deep sleep: unload models."""
+    # Late import for modules that may have circular dependencies
     from core.models import unload_models
 
     with ctx.sleep_lock:
         if ctx.is_deep_sleeping:
-            print("[Veille Profonde] Déjà en veille profonde, skip")
+            log_info("[Veille Profonde] Déjà en veille profonde, skip")
             return
         if not ctx.is_sleeping:
-            print("[Veille Profonde] Doit être en veille d'abord")
+            log_info("[Veille Profonde] Doit être en veille d'abord")
             return
         ctx.is_deep_sleeping = True
 
-    print("\n🌙 VEILLE PROFONDE ACTIVÉE")
-    print("   → Déchargement des modèles IA...")
-    print("   Appuyez sur F9 pour réactiver (délai: ~3-5s)")
+    log_info("VEILLE PROFONDE ACTIVÉE")
+    log_info("  Déchargement des modèles IA...")
+    log_info("  Appuyez sur F9 pour réactiver (délai: ~3-5s)")
+
+    # Publish deep sleep event
+    EventBus.publish(Events.DEEP_SLEEP_ENTERED)
 
     # Unload models to save memory
     unload_models(ctx)
 
-    print("   ✅ Veille profonde active - Consommation minimale")
+    log_info("  Veille profonde active - Consommation minimale")
 
 
 def check_deep_sleep(ctx: AppContext) -> None:
@@ -358,7 +410,7 @@ def check_deep_sleep(ctx: AppContext) -> None:
             return
 
     # Call outside lock
-    print(f"\n⏰ Veille prolongée détectée ({sleep_duration / 60:.1f} min)")
+    log_info(f"Veille prolongée détectée ({sleep_duration / 60:.1f} min)")
     enter_deep_sleep_mode(ctx)
 
 
@@ -386,11 +438,11 @@ def check_visualizer_closed(ctx: AppContext) -> None:
         visualizer_closed = ctx.visualizer_proc.poll() is not None
 
     if visualizer_closed:
-        print("\n🪟 Visualizer fermé par l'utilisateur")
+        log_info("Visualizer fermé par l'utilisateur")
         # Set sleep state directly (don't call deactivate_system to avoid recursion)
         with ctx.sleep_lock:
             ctx.is_sleeping = True
             ctx.manual_sleep = True
             ctx.sleep_start_time = time.time()
         ctx.audio.set_recording(False)
-        print("   → Système en veille - F9 pour réactiver")
+        log_info("  Système en veille - F9 pour réactiver")

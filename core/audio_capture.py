@@ -1,4 +1,12 @@
-"""Audio acquisition helpers."""
+"""Audio acquisition helpers.
+
+This module handles audio capture callbacks and paste operations with
+platform-specific implementations for Linux/Windows.
+
+Phase 4 Integration:
+- Uses error handling decorators for robust paste operations
+- Thread-safe paste operations with TimeoutLock
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+import threading
 from typing import Optional, TYPE_CHECKING
 
 import numpy as np
@@ -13,13 +22,20 @@ import pyperclip
 from pynput import keyboard as pynput_keyboard
 
 from shared import config
+from shared.constants import LOG_PREFIX_AUDIO, LOG_PREFIX_PASTE, PASTE_LOCK_TIMEOUT
 from shared.context import AppContext
+from shared.logger import log_info, log_warn, log_error
+from shared.errors import handle_errors
+from shared.threading_utils import TimeoutLock
 
 if TYPE_CHECKING:
     from .voice_detector import VoiceDetector
 
 
 _keyboard_controller = pynput_keyboard.Controller()
+
+# Thread-safe lock for paste operations to prevent concurrent paste conflicts
+_paste_lock = TimeoutLock(timeout=PASTE_LOCK_TIMEOUT, name="paste_lock")
 
 
 def _detect_linux_environment() -> tuple[str, bool, bool]:
@@ -64,7 +80,7 @@ def make_audio_callback(ctx: AppContext):
 
     def _callback(indata, frames, time_info, status):  # type: ignore[override]
         if status:
-            print(f"⚠️ Audio status: {status}")
+            log_warn(f"{LOG_PREFIX_AUDIO} status: {status}")
 
         # PRIORITÉ 1: Système en veille (F9 OFF) → ignorer tout audio
         with ctx.sleep_lock:
@@ -126,10 +142,10 @@ def detect_activity(
     if getattr(config, "DEBUG_AUDIO_LEVEL", False):
         if use_zcr and is_above_threshold:
             zcr = calculate_zcr(audio_flat)
-            status = "✓ VOICE" if is_active else f"✗ NOISE (ZCR={zcr:.3f})"
+            status = "VOICE" if is_active else f"NOISE (ZCR={zcr:.3f})"
         else:
-            status = "✓ ACTIVE" if is_active else "  silent"
-        print(f"\r[AUDIO] RMS={rms:.6f} threshold={config.ENERGY_THRESHOLD} → {status}", end="", flush=True)
+            status = "ACTIVE" if is_active else "silent"
+        log_info(f"{LOG_PREFIX_AUDIO} RMS={rms:.6f} threshold={config.ENERGY_THRESHOLD} -> {status}")
 
     return is_active
 
@@ -164,16 +180,16 @@ def _paste_linux_xdotool(text: str) -> bool:
             env=env
         )
         if result.returncode != 0:
-            print(f"⚠️ xdotool stderr: {result.stderr}", flush=True)
+            log_warn(f"{LOG_PREFIX_PASTE} xdotool stderr: {result.stderr}")
         return result.returncode == 0
     except subprocess.TimeoutExpired:
-        print("⚠️ xdotool timeout (10s)", flush=True)
+        log_warn(f"{LOG_PREFIX_PASTE} xdotool timeout (10s)")
         return False
     except FileNotFoundError:
-        print("⚠️ xdotool non trouvé", flush=True)
+        log_warn(f"{LOG_PREFIX_PASTE} xdotool non trouvé")
         return False
     except Exception as exc:
-        print(f"⚠️ Erreur xdotool: {exc}", flush=True)
+        log_warn(f"{LOG_PREFIX_PASTE} Erreur xdotool: {exc}")
         return False
 
 
@@ -200,7 +216,7 @@ def _paste_linux_clipboard(text: str) -> bool:
         )
         return result.returncode == 0
     except Exception as exc:
-        print(f"⚠️ Erreur paste clipboard Linux: {exc}")
+        log_warn(f"{LOG_PREFIX_PASTE} Erreur paste clipboard Linux: {exc}")
         return False
 
 
@@ -224,10 +240,11 @@ def _paste_windows_pynput(text: str) -> bool:
         _keyboard_controller.release(pynput_keyboard.Key.ctrl)
         return True
     except Exception as exc:
-        print(f"⚠️ Erreur paste Windows: {exc}")
+        log_warn(f"{LOG_PREFIX_PASTE} Erreur paste Windows: {exc}")
         return False
 
 
+@handle_errors(log_prefix=LOG_PREFIX_PASTE, reraise=False)
 def paste_via_clipboard(ctx: AppContext, text: str) -> None:
     """
     Paste text into the active window using platform-specific method.
@@ -237,6 +254,8 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
     - Linux Wayland: Fallback to clipboard + pynput
     - Windows: Use pyperclip + pynput (original method)
 
+    Thread-safe: Uses TimeoutLock to prevent concurrent paste operations.
+
     Args:
         ctx: Application context
         text: Text to paste
@@ -244,6 +263,13 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
     if not text or text == ctx.last_pasted:
         return
 
+    # Use timeout lock to prevent concurrent paste operations
+    with _paste_lock:
+        _paste_text_impl(ctx, text)
+
+
+def _paste_text_impl(ctx: AppContext, text: str) -> None:
+    """Internal implementation of paste operation (runs under lock)."""
     payload = text + (" " if config.APPEND_SPACE and not text.endswith(" ") else "")
     old_clip: Optional[str] = None
 
@@ -265,16 +291,16 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
         # Use xdotool if available - works on X11 AND via XWayland under Wayland
         if xwayland_available:
             method = "XWayland" if env_type == "Wayland" else "X11"
-            print(f"[Paste] Utilisation xdotool ({method}) pour coller {len(payload)} caractères", flush=True)
+            log_info(f"{LOG_PREFIX_PASTE} Utilisation xdotool ({method}) pour coller {len(payload)} caractères")
             success = _paste_linux_xdotool(payload)
 
             if not success:
                 # Fallback to clipboard method
-                print("[Paste] Fallback: xdotool clipboard method", flush=True)
+                log_info(f"{LOG_PREFIX_PASTE} Fallback: xdotool clipboard method")
                 success = _paste_linux_clipboard(payload)
         else:
             # No xdotool or no DISPLAY - use pynput as last resort
-            print(f"[Paste] Environnement {env_type}, xdotool indisponible, utilisation pynput", flush=True)
+            log_info(f"{LOG_PREFIX_PASTE} Environnement {env_type}, xdotool indisponible, utilisation pynput")
 
             # Use pynput as fallback (limited on Wayland)
             try:
@@ -287,8 +313,8 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
                 _keyboard_controller.release(pynput_keyboard.Key.ctrl)
                 success = True
             except Exception as exc:
-                print(f"⚠️ Erreur paste pynput (Linux): {exc}")
-                print("   Installez xdotool pour un meilleur support: sudo apt install xdotool")
+                log_warn(f"{LOG_PREFIX_PASTE} Erreur paste pynput (Linux): {exc}")
+                log_warn(f"{LOG_PREFIX_PASTE} Installez xdotool pour un meilleur support: sudo apt install xdotool")
 
     elif sys.platform == "win32":
         # Windows: use original method
@@ -296,7 +322,7 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
 
     else:
         # Other platforms: try pynput
-        print(f"[Paste] Plateforme {sys.platform} non testee, utilisation pynput")
+        log_info(f"{LOG_PREFIX_PASTE} Plateforme {sys.platform} non testée, utilisation pynput")
         success = _paste_windows_pynput(payload)
 
     # Restore clipboard if enabled and paste was successful
@@ -310,4 +336,4 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
     if success:
         ctx.last_pasted = text
     else:
-        print("❌ Echec du collage du texte")
+        log_warn(f"{LOG_PREFIX_PASTE} Échec du collage du texte")

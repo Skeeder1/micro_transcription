@@ -8,14 +8,16 @@ import sys
 import time
 
 from shared import config
+from shared.constants import LOG_PREFIX_VISUALIZER
 from shared.context import AppContext
+from shared.logger import log_info, log_warn
 
 
 def start_visualizer(ctx: AppContext) -> None:
     """Start the visualizer process if not already running."""
     with ctx.visualizer_lock:
         if ctx.visualizer_proc and ctx.visualizer_proc.poll() is None:
-            print("[Visualizer] Déjà actif, skip")
+            log_info(f"{LOG_PREFIX_VISUALIZER} Déjà actif, skip")
             return
 
         if ctx.visualizer_proc:
@@ -74,9 +76,9 @@ def start_visualizer(ctx: AppContext) -> None:
                 creationflags=creationflags,
                 env=env,
             )
-            print(f"[Visualizer] Lancé (PID: {ctx.visualizer_proc.pid})")
+            log_info(f"{LOG_PREFIX_VISUALIZER} Lancé (PID: {ctx.visualizer_proc.pid})")
         except Exception as exc:
-            print(f"[Visualizer] Erreur lancement: {exc}")
+            log_warn(f"{LOG_PREFIX_VISUALIZER} Erreur lancement: {exc}")
             ctx.visualizer_proc = None
 
     time.sleep(config.VISUALIZER_START_DELAY)
@@ -89,23 +91,23 @@ def stop_visualizer(ctx: AppContext) -> None:
             return
 
         if ctx.visualizer_proc.poll() is not None:
-            print(f"[Visualizer] Déjà terminé (PID: {ctx.visualizer_proc.pid})")
+            log_info(f"{LOG_PREFIX_VISUALIZER} Déjà terminé (PID: {ctx.visualizer_proc.pid})")
             ctx.visualizer_proc = None
             return
 
-        print(f"[Visualizer] Arrêt (PID: {ctx.visualizer_proc.pid})...")
+        log_info(f"{LOG_PREFIX_VISUALIZER} Arrêt (PID: {ctx.visualizer_proc.pid})...")
         ctx.visualizer_proc.terminate()
         try:
             ctx.visualizer_proc.wait(timeout=config.VISUALIZER_STOP_TIMEOUT)
-            print("[Visualizer] Arrêté proprement")
+            log_info(f"{LOG_PREFIX_VISUALIZER} Arrêté proprement")
         except subprocess.TimeoutExpired:
-            print("[Visualizer] Force kill (timeout)...")
+            log_warn(f"{LOG_PREFIX_VISUALIZER} Force kill (timeout)...")
             ctx.visualizer_proc.kill()
             try:
                 ctx.visualizer_proc.wait(timeout=config.VISUALIZER_KILL_TIMEOUT)
             except Exception:
                 pass
         except Exception as exc:
-            print(f"[Visualizer] Erreur arrêt: {exc}")
+            log_warn(f"{LOG_PREFIX_VISUALIZER} Erreur arrêt: {exc}")
         finally:
             ctx.visualizer_proc = None

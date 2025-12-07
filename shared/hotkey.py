@@ -1,4 +1,13 @@
-"""Hotkey management using pynput."""
+"""Hotkey management using pynput.
+
+This module handles keyboard hotkeys for the transcription system:
+- F8: Toggle microphone recording
+- F9: Toggle system sleep mode
+
+Phase 4 Integration:
+- Uses error handling for robust hotkey processing
+- Hotkey actions trigger events via sleep.py's toggle functions
+"""
 
 from __future__ import annotations
 
@@ -7,6 +16,10 @@ import time
 from typing import Callable, Optional, Dict
 
 from pynput import keyboard as pynput_keyboard
+
+from shared.constants import LOG_PREFIX_HOTKEY
+from shared.logger import log_error, log_info
+from shared.errors import handle_errors
 
 
 class HotkeyManager:
@@ -30,7 +43,9 @@ class HotkeyManager:
         self._state: Dict[str, bool] = {"f8_consumed": False, "f9_consumed": False}
         self._last_press_time: Dict[str, float] = {"f8": 0.0, "f9": 0.0}
 
+    @handle_errors(log_prefix=LOG_PREFIX_HOTKEY, reraise=False)
     def start(self) -> None:
+        """Start listening for hotkeys."""
         if self._listener is not None:
             return
         self._listener = pynput_keyboard.Listener(
@@ -40,6 +55,7 @@ class HotkeyManager:
         )
         self._listener.daemon = True
         self._listener.start()
+        log_info(f"{LOG_PREFIX_HOTKEY} Listener démarré")
 
     def stop(self) -> None:
         if self._listener is None:
@@ -90,7 +106,7 @@ class HotkeyManager:
             except AttributeError:
                 pass
             except Exception as exc:
-                print(f"[Hotkey] ERROR in press handler: {exc}")
+                log_error(f"{LOG_PREFIX_HOTKEY} ERROR in press handler: {exc}")
                 self._state["f8_consumed"] = False
                 self._state["f9_consumed"] = False
 
@@ -124,6 +140,6 @@ class HotkeyManager:
             except AttributeError:
                 pass
             except Exception as exc:
-                print(f"[Hotkey] ERROR in release handler: {exc}")
+                log_error(f"{LOG_PREFIX_HOTKEY} ERROR in release handler: {exc}")
                 self._state["f8_consumed"] = False
                 self._state["f9_consumed"] = False

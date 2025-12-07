@@ -16,26 +16,16 @@ import numpy as np
 
 from shared import config
 from shared.audio_utils import calculate_rms, calculate_zcr, estimate_pitch_autocorr
-
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-# Pitch detection parameters
-PITCH_F0_MIN = 70.0   # Minimum fundamental frequency (Hz) - covers male voices
-PITCH_F0_MAX = 400.0  # Maximum fundamental frequency (Hz) - covers female voices
-PITCH_DROP_THRESHOLD = 0.15  # 15% drop indicates falling intonation
-
-# Energy analysis
-MIN_AUDIO_SAMPLES_FOR_PITCH = 512  # Minimum samples needed for pitch detection
-ENERGY_EPSILON = 1e-10  # Minimum energy to avoid division by zero
-
-# Phrase end detection thresholds
-# Avec BLOCK_SECONDS = 0.5s : 5 blocs = 2.5s de silence avant flush
-SILENCE_BLOCKS_DEFINITE = 5  # Definite phrase end after this many silent blocks
-SILENCE_BLOCKS_WITH_ENERGY = 5  # Phrase end with energy drop
-SILENCE_BLOCKS_WITH_PITCH = 5  # Phrase end with energy + pitch drop
+from shared.constants import (
+    SPEECH_F0_MIN,
+    SPEECH_F0_MAX,
+    PITCH_DROP_THRESHOLD,
+    MIN_AUDIO_SAMPLES_FOR_PITCH,
+    ENERGY_EPSILON,
+    SILENCE_BLOCKS_DEFINITE,
+    SILENCE_BLOCKS_WITH_ENERGY,
+    SILENCE_BLOCKS_WITH_PITCH,
+)
 
 
 class PhraseEndDetector:
@@ -113,8 +103,8 @@ class PhraseEndDetector:
         return estimate_pitch_autocorr(
             audio,
             self.sample_rate,
-            f0_min=PITCH_F0_MIN,
-            f0_max=PITCH_F0_MAX
+            f0_min=SPEECH_F0_MIN,
+            f0_max=SPEECH_F0_MAX
         )
 
     # =========================================================================

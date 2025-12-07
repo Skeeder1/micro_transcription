@@ -3,6 +3,10 @@ Advanced voice activity detection combining Silero VAD and Zero Crossing Rate.
 
 This module provides human speech detection that distinguishes voice from ambient noise,
 improving transcription accuracy and end-of-speech detection.
+
+Phase 4 Integration:
+- Publishes calibration events via EventBus
+- Uses error handling for model operations
 """
 
 from __future__ import annotations
@@ -16,32 +20,24 @@ import numpy as np
 import torch
 
 from shared.audio_utils import calculate_rms, calculate_zcr
-from shared.exceptions import ModelLoadError
-
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-# Silero VAD model - téléchargé une seule fois, chargé localement ensuite
-SILERO_MODEL_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.jit"
-SILERO_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", ".cache")
-SILERO_MODEL_PATH = os.path.join(SILERO_MODEL_DIR, "silero_vad.jit")
-
-# Calibration settings
-CALIBRATION_CHUNKS = 10  # Number of chunks for initial calibration (~5s at 0.5s/chunk)
-RECALIBRATION_SILENCE_THRESHOLD = 30.0  # Recalibrate after 30s of silence
-MIN_ABSOLUTE_RMS_FLOOR = 0.0005  # Minimum RMS floor (prevents division by zero)
-NOISE_FLOOR_MULTIPLIER = 1.1  # Dynamic threshold = noise_floor * 1.1 (just above noise)
-
-# Silero VAD requirements
-SILERO_SAMPLES_16K = 512  # Required samples for 16kHz
-SILERO_SAMPLES_8K = 256   # Required samples for 8kHz
-SILERO_HOP_RATIO = 0.5    # 50% overlap for sliding window
-
-# Adaptive detection
-REFERENCE_UPDATE_ALPHA = 0.05  # EMA alpha for reference level (5% new, 95% old)
-AMBIENT_FACTOR_MARGIN = 0.7   # Margin for ambient vs speech classification
+from shared.constants import (
+    SILERO_MODEL_URL,
+    SILERO_MODEL_DIR,
+    SILERO_MODEL_PATH,
+    CALIBRATION_CHUNKS,
+    RECALIBRATION_SILENCE_THRESHOLD,
+    MIN_ABSOLUTE_RMS_FLOOR,
+    NOISE_FLOOR_MULTIPLIER,
+    SILERO_SAMPLES_16K,
+    SILERO_SAMPLES_8K,
+    SILERO_HOP_RATIO,
+    REFERENCE_UPDATE_ALPHA,
+    AMBIENT_FACTOR_MARGIN,
+    LOG_PREFIX_VAD,
+)
+from shared.events import EventBus, Events
+from shared.errors import handle_errors
+from shared.logger import log_info, log_warn
 
 
 class VoiceDetector:
@@ -134,15 +130,16 @@ class VoiceDetector:
             # Create cache directory
             os.makedirs(SILERO_MODEL_DIR, exist_ok=True)
 
-            print("📥 Téléchargement Silero VAD (première fois uniquement)...")
+            log_info(f"{LOG_PREFIX_VAD} Téléchargement Silero VAD (première fois uniquement)...")
             urllib.request.urlretrieve(SILERO_MODEL_URL, SILERO_MODEL_PATH)
-            print("   ✅ Modèle téléchargé et sauvegardé localement")
+            log_info(f"{LOG_PREFIX_VAD} Modèle téléchargé et sauvegardé localement")
             return True
 
         except Exception as e:
-            print(f"⚠️ Échec téléchargement Silero VAD: {e}")
+            log_warn(f"{LOG_PREFIX_VAD} Échec téléchargement Silero VAD: {e}")
             return False
 
+    @handle_errors(log_prefix=LOG_PREFIX_VAD, reraise=False)
     def _load_model(self) -> None:
         """Load Silero VAD model from local file."""
         if self._model_loaded:
@@ -159,14 +156,14 @@ class VoiceDetector:
             self._model.eval()
             self._model_loaded = True
 
-            print(
-                f"✅ Silero VAD chargé (local) "
+            log_info(
+                f"{LOG_PREFIX_VAD} Silero VAD chargé (local) "
                 f"(threshold={self.silero_threshold})"
             )
 
         except Exception as e:
-            print(f"⚠️ Échec chargement Silero VAD: {e}")
-            print("   → Mode dégradé: utilisation RMS uniquement")
+            log_warn(f"{LOG_PREFIX_VAD} Échec chargement Silero VAD: {e}")
+            log_warn(f"{LOG_PREFIX_VAD} Mode dégradé: utilisation RMS uniquement")
             self._model_loaded = False
 
     def preload_model(self) -> None:
@@ -177,7 +174,7 @@ class VoiceDetector:
         delay on first voice detection.
         """
         if not self._model_loaded:
-            print("📥 Préchargement Silero VAD...")
+            log_info(f"{LOG_PREFIX_VAD} Préchargement Silero VAD...")
             self._load_model()
 
     def unload_model(self) -> None:
@@ -186,7 +183,7 @@ class VoiceDetector:
             del self._model
             self._model = None
             self._model_loaded = False
-            print("🗑️ Silero VAD déchargé")
+            log_info(f"{LOG_PREFIX_VAD} Silero VAD déchargé")
 
     def skip_calibration_on_wake(self) -> None:
         """
@@ -197,7 +194,7 @@ class VoiceDetector:
         if self._noise_floor > 0:
             # Already calibrated before - keep existing values
             self._is_calibrating = False
-            print("⚡ Réveil rapide - calibration précédente conservée")
+            log_info(f"{LOG_PREFIX_VAD} Réveil rapide - calibration précédente conservée")
         # Si jamais calibré, la calibration normale se fera au premier audio
 
     def start_calibration(self) -> None:
@@ -210,7 +207,9 @@ class VoiceDetector:
         self._calibration_count = 0
         self._rms_history.clear()
         self._max_calibration_count = CALIBRATION_CHUNKS
-        print("🎯 Calibration démarrée (pendant pause micro)...")
+        log_info(f"{LOG_PREFIX_VAD} Calibration démarrée (pendant pause micro)...")
+        # Publish calibration started event
+        EventBus.publish(Events.CALIBRATION_STARTED)
 
     # =========================================================================
     # Audio Analysis (using shared utilities)
@@ -270,10 +269,16 @@ class VoiceDetector:
             self._dynamic_rms_threshold = max(self._dynamic_rms_threshold, MIN_ABSOLUTE_RMS_FLOOR)
 
         self._is_calibrating = False
-        print(f"🎯 Calibration terminée:")
-        print(f"   Niveau de bruit (25th percentile): {self._noise_floor:.6f}")
-        print(f"   Seuil dynamique ({NOISE_FLOOR_MULTIPLIER}x bruit): {self._dynamic_rms_threshold:.6f}")
-        print(f"   Seuil config (référence): {self.rms_threshold:.6f}")
+        log_info(f"{LOG_PREFIX_VAD} Calibration terminée:")
+        log_info(f"{LOG_PREFIX_VAD}   Niveau de bruit (25th percentile): {self._noise_floor:.6f}")
+        log_info(f"{LOG_PREFIX_VAD}   Seuil dynamique ({NOISE_FLOOR_MULTIPLIER}x bruit): {self._dynamic_rms_threshold:.6f}")
+        log_info(f"{LOG_PREFIX_VAD}   Seuil config (référence): {self.rms_threshold:.6f}")
+        # Publish calibration complete event with results
+        EventBus.publish(
+            Events.CALIBRATION_COMPLETE,
+            noise_floor=self._noise_floor,
+            dynamic_threshold=self._dynamic_rms_threshold
+        )
 
     def _get_boost_factor(self, current_rms: float) -> float:
         """Calculate how much louder current audio is vs ambient."""
@@ -303,7 +308,7 @@ class VoiceDetector:
             return self._process_multiple_windows(audio, required_samples)
 
         except Exception as e:
-            print(f"⚠️ Erreur Silero VAD: {e}")
+            log_warn(f"{LOG_PREFIX_VAD} Erreur Silero VAD: {e}")
             return 0.0
 
     def _get_silero_probability_voting(self, audio: np.ndarray) -> Tuple[float, bool]:
@@ -343,7 +348,7 @@ class VoiceDetector:
             return avg_prob, is_voice
 
         except Exception as e:
-            print(f"⚠️ Erreur Silero VAD voting: {e}")
+            log_warn(f"{LOG_PREFIX_VAD} Erreur Silero VAD voting: {e}")
             return 0.0, False
 
     def _prepare_audio_for_silero(
@@ -425,7 +430,7 @@ class VoiceDetector:
         self._calibration_count = 0
         self._rms_history.clear()
         self._seconds_since_last_speech = 0.0
-        print("🔄 Recalibration automatique du bruit ambiant...")
+        log_info(f"{LOG_PREFIX_VAD} Recalibration automatique du bruit ambiant...")
 
     # =========================================================================
     # Main Detection Logic (refactored into sub-methods)
@@ -471,14 +476,14 @@ class VoiceDetector:
         if self._is_calibrating:
             if debug:
                 remaining = self._max_calibration_count - self._calibration_count
-                print(f"[VAD] CALIBRATION: {remaining} chunks restants (utilise config précédente)...")
+                log_info(f"{LOG_PREFIX_VAD} CALIBRATION: {remaining} chunks restants (utilise config précédente)...")
             # Continue detection with current thresholds (don't block)
 
         # Step 1: Dynamic RMS floor check
         # Use the calibrated threshold based on actual noise floor
         if self._last_rms < self._dynamic_rms_threshold:
             if debug:
-                print(f"[VAD] RMS={self._last_rms:.6f} < {self._dynamic_rms_threshold:.6f} → SILENCE (seuil dynamique)")
+                log_info(f"{LOG_PREFIX_VAD} RMS={self._last_rms:.6f} < {self._dynamic_rms_threshold:.6f} -> SILENCE (seuil dynamique)")
             self._check_recalibration(False)
             return False
 
@@ -497,8 +502,8 @@ class VoiceDetector:
 
         # All checks passed
         if debug:
-            print(
-                f"[VAD] ✓ VOIX: REF={self._reference_rms:.6f} "
+            log_info(
+                f"{LOG_PREFIX_VAD} VOIX: REF={self._reference_rms:.6f} "
                 f"NOW={self._last_rms:.6f} BOOST={self._last_boost:.2f}x "
                 f"Silero={self._last_silero_prob:.3f}"
             )
@@ -518,7 +523,7 @@ class VoiceDetector:
         # Step 1: RMS pre-filter
         if self._last_rms < self.rms_threshold:
             if debug:
-                print(f"[VAD] RMS={self._last_rms:.6f} < {self.rms_threshold} → SILENCE")
+                log_info(f"{LOG_PREFIX_VAD} RMS={self._last_rms:.6f} < {self.rms_threshold} -> SILENCE")
             return False
 
         # Step 2: Silero VAD
@@ -531,8 +536,8 @@ class VoiceDetector:
 
         # All checks passed
         if debug:
-            print(
-                f"[VAD] ✓ VOIX: RMS={self._last_rms:.6f}, "
+            log_info(
+                f"{LOG_PREFIX_VAD} VOIX: RMS={self._last_rms:.6f}, "
                 f"Silero={self._last_silero_prob:.3f}, ZCR={self._last_zcr:.4f}"
             )
 
@@ -543,9 +548,9 @@ class VoiceDetector:
         """Check if energy boost meets threshold (adaptive mode)."""
         if self._last_boost < self.adaptive_boost_factor:
             if debug:
-                print(
-                    f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} "
-                    f"BOOST={self._last_boost:.2f}x < {self.adaptive_boost_factor}x → AMBIANT"
+                log_info(
+                    f"{LOG_PREFIX_VAD} REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} "
+                    f"BOOST={self._last_boost:.2f}x < {self.adaptive_boost_factor}x -> AMBIANT"
                 )
             return False
         return True
@@ -554,9 +559,9 @@ class VoiceDetector:
         """Check Silero VAD with voting (adaptive mode)."""
         if self._model is None:
             if debug:
-                print(
-                    f"[VAD] REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} "
-                    f"BOOST={self._last_boost:.2f}x → VOIX"
+                log_info(
+                    f"{LOG_PREFIX_VAD} REF={self._reference_rms:.6f} NOW={self._last_rms:.6f} "
+                    f"BOOST={self._last_boost:.2f}x -> VOIX"
                 )
             return True
 
@@ -564,9 +569,9 @@ class VoiceDetector:
 
         if not is_voice:
             if debug:
-                print(
-                    f"[VAD] BOOST={self._last_boost:.2f}x OK, "
-                    f"mais Silero vote={self._last_silero_prob:.3f} → BRUIT"
+                log_info(
+                    f"{LOG_PREFIX_VAD} BOOST={self._last_boost:.2f}x OK, "
+                    f"mais Silero vote={self._last_silero_prob:.3f} -> BRUIT"
                 )
             self._check_recalibration(False)
             return False
@@ -577,16 +582,16 @@ class VoiceDetector:
         """Check Silero VAD with simple threshold (legacy mode)."""
         if self._model is None:
             if debug:
-                print(f"[VAD] Silero indisponible, RMS={self._last_rms:.6f} → ACTIVE")
+                log_info(f"{LOG_PREFIX_VAD} Silero indisponible, RMS={self._last_rms:.6f} -> ACTIVE")
             return True
 
         self._last_silero_prob = self._get_silero_probability(audio)
 
         if self._last_silero_prob < self.silero_threshold:
             if debug:
-                print(
-                    f"[VAD] Silero={self._last_silero_prob:.3f} "
-                    f"< {self.silero_threshold} → NOISE"
+                log_info(
+                    f"{LOG_PREFIX_VAD} Silero={self._last_silero_prob:.3f} "
+                    f"< {self.silero_threshold} -> NOISE"
                 )
             return False
 
@@ -601,7 +606,7 @@ class VoiceDetector:
 
         if not (self.zcr_min <= self._last_zcr <= self.zcr_max):
             if debug:
-                print(f"[VAD] ZCR={self._last_zcr:.4f} hors limites → BRUIT")
+                log_info(f"{LOG_PREFIX_VAD} ZCR={self._last_zcr:.4f} hors limites -> BRUIT")
             return False
 
         return True

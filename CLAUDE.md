@@ -1,323 +1,476 @@
-# CLAUDE.md
+# CLAUDE.md - LLM Knowledge Base
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project Identity
 
-## Project Overview
+**Name**: Micro Transcription
+**Type**: Real-time speech-to-text system
+**Language**: Python 3.12
+**Platform**: Linux/Ubuntu (primary), Windows (legacy)
+**Core Tech**: faster-whisper, PySide6, Flask SSE, Silero VAD
 
-Advanced speech-to-text transcription system with real-time audio visualization, Whisper-based transcription, and modular architecture prepared for AutoGen integration. The system uses a multi-process architecture with Server-Sent Events (SSE) for inter-module communication.
+---
 
-## Development Commands
+## Architecture Overview
 
-### Running the Application
-
-```bash
-# Normal launch (background, no console)
-python main.py
-scripts\start_transcription.bat
-
-# Debug mode (console visible with full logs)
-scripts\start_transcription_debug.bat
-
-# Stop all processes
-scripts\stop_transcription.bat
+```
+main.py                      # Entry point → core.engine.run()
+│
+├── core/                    # Audio processing & transcription
+│   ├── engine.py            # Bootstrap, main loop orchestration
+│   ├── processor.py         # Audio pipeline (preview + production)
+│   ├── models.py            # Whisper model loading/inference
+│   ├── audio_capture.py     # Microphone input, clipboard paste
+│   ├── audio_preprocessing.py # Audio filters, normalization
+│   ├── voice_detector.py    # Silero VAD + ZCR detection
+│   ├── phrase_detector.py   # End-of-phrase detection
+│   ├── pipeline.py          # AudioBuffer, PreviewManager, ProductionManager
+│   ├── noise_reduction.py   # Spectral noise reduction (optional)
+│   └── speaker_detector.py  # Speaker verification (optional)
+│
+├── api/                     # Inter-process communication
+│   ├── server.py            # Flask + SSE broadcasting
+│   └── routes/
+│       └── transcription.py # /events SSE endpoint
+│
+├── ui/                      # Qt6 visualizer (subprocess)
+│   ├── manager.py           # Subprocess lifecycle
+│   └── visualizer_app.py    # PySide6 WebEngine app
+│
+└── shared/                  # Cross-module utilities
+    ├── context.py           # AppContext (global state)
+    ├── config.py            # Configuration bridge (exports from settings)
+    ├── settings.py          # Pydantic settings (source of truth)
+    ├── constants.py         # Shared constants
+    ├── interfaces.py        # Protocol definitions + ServiceRegistry
+    ├── events.py            # EventBus pub/sub system
+    ├── errors.py            # Exception hierarchy + decorators
+    ├── sleep.py             # F8/F9 state management
+    ├── hotkey.py            # Keyboard hotkey listener
+    ├── logger.py            # Logging utilities
+    ├── audio_utils.py       # Audio processing utilities
+    ├── service_utils.py     # Service accessor helpers
+    └── threading_utils.py   # TimeoutLock
 ```
 
-### Testing and Development
+---
 
-```bash
-# Run with virtual environment
-.venv\Scripts\python.exe main.py
+## Core Design Patterns
 
-# Test individual modules
-.venv\Scripts\python.exe -m ui.visualizer_app [sse_port]
+### 1. AppContext - Centralized State
 
-# Check dependencies
-.venv\Scripts\python.exe -c "import flask; import faster_whisper; import PySide6; import sounddevice"
-```
-
-### Common Issues
-
-**Windows UTF-8 Encoding**: The application uses emojis and French accented characters. If you see `UnicodeEncodeError`, ensure UTF-8 encoding is configured in the entry point:
-
-```python
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-```
-
-This is already implemented in `core/engine.py:38-42`.
-
-## Architecture
-
-### Module Structure
-
-The codebase follows a strict modular architecture:
-
-- **core/** - Transcription engine (Whisper models, audio processing)
-- **ui/** - Qt6 PySide6 visualizer (subprocess, communicates via SSE)
-- **api/** - Flask server for SSE communication between modules
-- **shared/** - Shared utilities (config, context, hotkey, sleep)
-- **services/** - Future AutoGen integration (stub)
-
-### Critical Architecture Patterns
-
-#### 1. AppContext - Shared State Container
-
-`shared/context.py` defines `AppContext`, a dataclass that holds ALL mutable shared state:
+All mutable state lives in `shared/context.py:AppContext`. Pass `ctx` to every function.
 
 ```python
 @dataclass
 class AppContext:
-    visualizer_proc: Optional[subprocess.Popen]  # UI subprocess
-    model: Optional[WhisperModel]                # Single Whisper model
-    sse_clients: List[queue.Queue]               # SSE client queues
-    audio_queue: queue.Queue                     # Audio blocks from sounddevice
-    is_sleeping: bool                            # Sleep state
-    executor: ThreadPoolExecutor                 # Thread pool
-    # ... plus various locks for thread safety
+    # Sub-contexts
+    models: ModelContext       # model, model_lock, voice_detector
+    sleep: SleepContext        # is_sleeping, is_deep_sleeping, manual_sleep
+    audio: AudioContext        # audio_queue, is_recording, production_buffer
+    sse: SSEContext            # sse_clients, sse_lock
+
+    # Process management
+    visualizer_proc: Optional[subprocess.Popen]
+    executor: ThreadPoolExecutor
+
+    # Convenience locks (delegate to sub-contexts)
+    @property
+    def sleep_lock(self) -> threading.Lock
+    @property
+    def sse_lock(self) -> threading.Lock
+    @property
+    def model_lock(self) -> threading.Lock
 ```
 
-**Key insight**: AppContext is passed to ALL major functions and is the single source of truth for application state. When adding features, if you need shared state, add it to AppContext.
-
-#### 2. Configuration System
-
-Configuration is centralized but modular:
-
-- Each module has its own `config.py` (e.g., `core/config.py`, `ui/config.py`)
-- `shared/config.py` imports and re-exports ALL configs
-- **Always import from shared**: `from shared import config` (never from individual modules)
-
-This prevents circular imports and provides a single namespace for all configuration.
-
-#### 3. Server-Sent Events (SSE) Communication
-
-The UI runs as a **separate subprocess** and communicates via SSE:
-
-```
-┌─────────────┐                 ┌─────────────┐
-│   Core      │                 │     UI      │
-│  (main.py)  │                 │ (subprocess)│
-│             │                 │             │
-│  ┌────────┐ │   HTTP SSE     │  ┌────────┐ │
-│  │ Flask  ├─┼────────────────┼─►│Qt6 App │ │
-│  │ Server │ │ /events stream │  │        │ │
-│  └────────┘ │                 │  └────────┘ │
-└─────────────┘                 └─────────────┘
-```
-
-Broadcasting to UI:
-
-```python
-from api.server import broadcast_preview, broadcast_state
-
-# Send transcription text
-broadcast_preview(ctx, "Transcribed text...")
-
-# Send state changes
-broadcast_state(ctx, "sleep")  # or "active"
-```
-
-The SSE implementation uses thread-safe queues (`ctx.sse_clients`) to broadcast to all connected clients.
-
-#### 4. Circular Import Prevention
-
-The codebase has strategic late imports to avoid circular dependencies:
-
-```python
-# In core/processor.py
-def run(ctx: AppContext) -> None:
-    # Import here to avoid circular imports
-    from shared.sleep import check_auto_sleep
-    from api.server import broadcast_preview
-    # ... rest of function
-```
-
-**When adding imports**: If you encounter circular import errors, move imports inside functions that use them.
-
-#### 5. Audio Pipeline
-
-The audio pipeline has two parallel streams:
-
-```
-Audio Input (sounddevice)
-    │
-    ├─► Preview Buffer  ──► Whisper Small (fast) ──► SSE ──► UI Display
-    │
-    └─► Production Buffer ──► Whisper Large (accurate) ──► Clipboard ──► Paste
-```
-
-- **Preview**: Fast, frequent updates shown in visualizer (may be inaccurate)
-- **Production**: Accurate, final transcription pasted to cursor after silence
-
-This is implemented in `core/processor.py:66-150`. The key constants:
-- `PREVIEW_UPDATE_INTERVAL`: How often to update preview (default 0.8s)
-- `SILENCE_BLOCKS_BEFORE_FLUSH`: How many silent blocks before pasting (default 5)
-
-#### 6. Sleep/Wake State Management
-
-Sleep states are managed in `shared/sleep.py`:
-
-- **Normal sleep** (`is_sleeping=True`): Audio capture paused, models loaded
-- **Deep sleep** (`is_deep_sleeping=True`): Models unloaded to save memory (after 10 minutes)
-
-Three ways to enter sleep:
-1. Manual toggle via F9 hotkey (`manual_sleep=True`)
-2. Auto-sleep after 10s of no speech detected
-3. Visualizer closed by user
-
-**Important**: The processor loop checks sleep state frequently and skips audio processing when sleeping. See `core/processor.py:47-52` and `shared/sleep.py`.
-
-#### 7. Thread Safety
-
-Multiple components use threading:
-
-- Audio capture callback (sounddevice thread)
-- Main processing loop (main thread)
-- Visualizer subprocess (separate process)
-- SSE event streams (Flask threads)
-- Model loading (background thread)
-
-**All shared state access must be protected**:
-
+**Pattern**: Never access ctx fields without locks:
 ```python
 with ctx.sleep_lock:
     ctx.is_sleeping = True
-
-with ctx.sse_lock:
-    for client in ctx.sse_clients:
-        client.put_nowait(message)
 ```
 
-Never access AppContext fields without appropriate locks.
+### 2. ServiceRegistry - Dependency Injection
 
-## Key Files and Their Roles
-
-### Entry Points
-
-- `main.py` - Single entry point, calls `core.engine.run()`
-- `core/engine.py` - Bootstraps all modules, starts visualizer, API server, hotkey manager, and main loop
-
-### Core Processing
-
-- `core/processor.py` - Main audio processing loop with preview/production pipelines
-- `core/audio_capture.py` - sounddevice callback, VAD detection, clipboard operations
-- `core/audio_preprocessing.py` - High-pass filter, normalization, amplification
-- `core/models.py` - Whisper model loading and transcription functions
-
-### Communication
-
-- `api/server.py` - Flask server, SSE event streams, `broadcast_preview()`, `broadcast_state()`
-- `api/routes/transcription.py` - `/events` endpoint for SSE
-- `api/routes/text_processing.py` - Stub endpoints for future AutoGen integration
-
-### UI Management
-
-- `ui/visualizer_app.py` - Qt6 PySide6 app, WebEngine view, SSE client
-- `ui/manager.py` - Subprocess management (start/stop visualizer)
-- `ui/assets/` - HTML/CSS/JS for waveform visualization and text display
-
-### Shared Utilities
-
-- `shared/context.py` - AppContext dataclass (shared state)
-- `shared/config.py` - Centralized configuration
-- `shared/hotkey.py` - F9 hotkey listener using pynput
-- `shared/sleep.py` - Sleep state transitions and auto-sleep logic
-
-## Configuration Locations
-
-All configuration is in module `config.py` files:
-
-- **Whisper models, audio params, VAD**: `core/config.py`
-- **API host, port, CORS**: `api/config.py`
-- **Visualizer window, subprocess timeouts**: `ui/config.py`
-- **Hotkey, sleep timings**: `shared/config.py`
-
-To change behavior, modify the appropriate config file. Changes are automatically imported via `shared/config.py`.
-
-## Whisper Model Configuration
-
-The system uses **faster-whisper** (optimized Whisper):
-
-- Default model: `large` (2.9GB, best accuracy)
-- Device: Auto-detects CUDA GPU, falls back to CPU
-- Single model for both preview and production (simplified from v1)
-
-**To change model** in `core/config.py`:
+`shared/interfaces.py:ServiceRegistry` provides runtime service location.
 
 ```python
-WHISPER_MODEL = "medium"  # or "small", "base", "tiny"
+# Registration (in engine.py)
+from shared.interfaces import ServiceRegistry, IBroadcaster
+ServiceRegistry.register(IBroadcaster, BroadcasterImpl())
+
+# Usage (anywhere)
+from shared.service_utils import get_broadcaster
+broadcaster = get_broadcaster()
+if broadcaster:
+    broadcaster.send_preview(ctx, "text")
 ```
 
-Model loading is async (background thread) while UI starts. See `core/engine.py:76-88`.
+### 3. EventBus - Decoupled Communication
 
-## Adding Features
+`shared/events.py` implements pub/sub for cross-module events.
 
-### Adding New SSE Message Types
+```python
+from shared.events import EventBus, Events
 
-1. Create broadcast function in `api/server.py`
-2. Call from core processing loop
-3. Handle in `ui/assets/js/visualizer.js` EventSource handler
+# Subscribe
+def on_transcription(text: str):
+    print(f"Got: {text}")
+EventBus.subscribe(Events.TRANSCRIPTION_COMPLETE, on_transcription)
 
-### Integrating AutoGen
+# Publish
+EventBus.publish(Events.TRANSCRIPTION_COMPLETE, text="Hello")
 
-The codebase is prepared for AutoGen integration:
+# Unsubscribe
+EventBus.unsubscribe(Events.TRANSCRIPTION_COMPLETE, on_transcription)
+```
 
-1. Endpoints stubbed in `api/routes/text_processing.py`
-2. Configuration example in `services/config.py.example`
-3. See `services/README.md` for integration guide
+**Available Events**:
+```python
+# System state
+SYSTEM_ACTIVATED          # F9 ON - system woke up
+SYSTEM_DEACTIVATED        # F9 OFF - system went to sleep
+DEEP_SLEEP_ENTERED        # Deep sleep mode activated
 
-### Adding New Configuration
+# Recording
+RECORDING_STARTED         # F8 ON - microphone recording
+RECORDING_STOPPED         # F8 OFF - microphone paused
 
-1. Add to appropriate module's `config.py`
-2. Export in `shared/config.py` (add to imports and `__all__`)
-3. Use via `from shared import config; config.NEW_PARAM`
+# Voice detection
+VOICE_DETECTED            # Voice activity detected
+SILENCE_DETECTED          # Silence detected
+AUDIO_BUFFER_FULL         # Production buffer reached limit
 
-## Testing and Debugging
+# Model lifecycle
+MODEL_LOADING_STARTED     # Whisper model loading started
+MODEL_LOADING_COMPLETE    # Whisper model loading finished
+MODEL_LOADING_FAILED      # Whisper model loading failed
+MODEL_UNLOADED            # Whisper model unloaded (deep sleep)
 
-### Debug Mode
+# Transcription
+TRANSCRIPTION_STARTED     # Whisper transcription started
+TRANSCRIPTION_COMPLETE    # Transcription finished with result
+TRANSCRIPTION_FAILED      # Transcription error
+PREVIEW_UPDATED           # Preview text updated
 
-Use `scripts\start_transcription_debug.bat` to see:
-- All print() statements
-- Exception tracebacks
-- SSE broadcast messages
-- Model loading progress
+# UI
+VISUALIZER_STARTED        # Visualizer window opened
+VISUALIZER_CLOSED         # Visualizer window closed
 
-Console remains open after crash for inspection.
+# Calibration
+CALIBRATION_STARTED       # VAD calibration started
+CALIBRATION_COMPLETE      # VAD calibration finished
+```
 
-### Checking Process State
+### 4. Error Handling Decorators
+
+`shared/errors.py` provides centralized error handling.
+
+```python
+from shared.errors import handle_errors, ModelLoadError
+
+@handle_errors(log_prefix="[Models]", reraise=True)
+def init_models(ctx: AppContext) -> None:
+    # Errors logged automatically, re-raised with context
+    model = WhisperModel(...)
+
+@handle_errors(log_prefix="[Transcribe]", reraise=False, default_return=None)
+def transcribe_audio(audio: np.ndarray) -> Optional[str]:
+    # Errors caught, logged, returns None on failure
+    return model.transcribe(audio)
+```
+
+### 5. Late Imports - Circular Dependency Prevention
+
+Move imports inside functions when circular imports occur:
+
+```python
+def activate_system(ctx: AppContext) -> None:
+    # Late imports to avoid circular dependencies
+    from core.models import init_models
+    from ui.manager import start_visualizer
+
+    init_models(ctx)
+    start_visualizer(ctx)
+```
+
+---
+
+## Data Flow
+
+### Audio Pipeline
+
+```
+Microphone (sounddevice)
+    │
+    ├─► ctx.audio_queue ─► processor.py
+    │                          │
+    │                     ┌────┴────┐
+    │                     │         │
+    │               Preview      Production
+    │            (every 0.8s)   (on silence)
+    │                     │         │
+    │               Whisper     Whisper
+    │              (fast/approx) (accurate)
+    │                     │         │
+    │                  SSE ──►    Clipboard
+    │                   UI        + Paste
+    │                     │         │
+    └─────────────────────┴─────────┘
+```
+
+### SSE Broadcasting
+
+```python
+# api/server.py
+def broadcast_preview(ctx: AppContext, text: str) -> None:
+    message = f"data: {json.dumps({'preview': text})}\n\n"
+    with ctx.sse_lock:
+        for client_queue in ctx.sse_clients:
+            client_queue.put_nowait(message)
+
+# Usage pattern
+from shared.service_utils import get_broadcaster
+broadcaster = get_broadcaster()
+broadcaster.send_preview(ctx, "transcribed text")
+broadcaster.send_state(ctx, "active")  # or "sleep"
+broadcaster.send_vad(ctx, True)        # voice detected
+broadcaster.send_processing(ctx, True) # whisper running
+```
+
+---
+
+## State Management
+
+### F8/F9 Hotkey Logic
+
+```
+F9 = System ON/OFF (main toggle)
+F8 = Microphone ON/OFF (only when system ON)
+
+States:
+- is_sleeping=False, is_recording=True  → Active, recording
+- is_sleeping=False, is_recording=False → Active, mic paused (F8)
+- is_sleeping=True                      → Sleep mode (F9 OFF)
+- is_deep_sleeping=True                 → Deep sleep (models unloaded)
+```
+
+**State Transitions** (`shared/sleep.py`):
+```python
+activate_system(ctx)    # F9 ON: wake up, load models, start visualizer
+deactivate_system(ctx)  # F9 OFF: flush audio, close visualizer, sleep
+toggle_recording(ctx)   # F8: pause/resume mic (only if system active)
+check_auto_sleep(ctx)   # Auto-sleep after 30s inactivity
+check_deep_sleep(ctx)   # Deep sleep after 30min (unload models)
+```
+
+---
+
+## Module Reference
+
+### core/engine.py
+Bootstrap and main loop. Entry point via `run()`.
+
+```python
+def run() -> None:
+    ctx = create_context()
+    start_api_server(ctx)
+    start_visualizer(ctx)
+    init_models(ctx)
+    start_hotkey_listener(ctx)
+    run_processor_loop(ctx)  # blocks until shutdown
+```
+
+### core/processor.py
+Main audio processing loop. Handles preview/production pipelines.
+
+Key functions:
+- `run(ctx)` - Main loop
+- `_process_audio_block()` - Per-block processing
+- `_transcribe_and_paste()` - Production transcription + paste
+
+### core/models.py
+Whisper model management.
+
+```python
+init_models(ctx)                    # Load Whisper model
+unload_models(ctx)                  # Free memory (deep sleep)
+transcribe_preview(ctx, audio)      # Fast transcription
+transcribe_production(ctx, audio)   # Accurate transcription
+```
+
+### core/voice_detector.py
+Silero VAD + Zero Crossing Rate for speech detection.
+
+```python
+detector = VoiceDetector()
+detector.start_calibration()        # Calibrate noise floor
+is_speech, prob = detector.is_voice(audio_chunk)
+```
+
+### api/server.py
+Flask SSE server.
+
+```python
+start_server(ctx)                   # Start in background thread
+broadcast_preview(ctx, text)        # Send preview to UI
+broadcast_state(ctx, "active")      # Send state change
+```
+
+### shared/context.py
+AppContext dataclass with sub-contexts (ModelContext, SleepContext, AudioContext, SSEContext).
+
+### shared/config.py
+Configuration bridge. Exports constants from `settings.py`:
+```python
+from shared import config
+sample_rate = config.SAMPLE_RATE
+whisper_model = config.WHISPER_MODEL
+```
+
+### shared/settings.py
+Pydantic settings - source of truth for all configuration:
+```python
+from shared.settings import settings
+sample_rate = settings.audio.sample_rate
+```
+
+---
+
+## Configuration Reference
+
+All configuration is in `shared/config.py` (which delegates to `shared/settings.py`).
+
+### Audio
+```python
+SAMPLE_RATE = 16000
+BLOCK_SECONDS = 0.5
+ENERGY_THRESHOLD = 200
+SILENCE_BLOCKS_BEFORE_FLUSH = 5
+MAX_PRODUCTION_SECONDS = 30
+```
+
+### VAD
+```python
+SILERO_THRESHOLD = 0.1
+USE_ZCR_FILTER = True
+ZCR_MIN = 0.02
+ZCR_MAX = 0.25
+```
+
+### Model
+```python
+WHISPER_MODEL = "large"
+DEVICE = "cuda"  # or "cpu"
+LANGUAGE = "fr"
+BEAM_SIZE = 5
+```
+
+### Sleep
+```python
+AUTO_SLEEP_SECONDS = 30
+DEEP_SLEEP_SECONDS = 1800  # 30 minutes
+HOTKEY_TOGGLE = "f9"
+```
+
+---
+
+## Testing
 
 ```bash
-# Check running Python processes
-tasklist | findstr python
+# Run all tests
+.venv/bin/python -m pytest tests/ -v
 
-# Check if visualizer is running
-tasklist | findstr python | findstr transcription
+# Run specific test file
+.venv/bin/python -m pytest tests/test_events.py -v
+
+# Run with coverage
+.venv/bin/python -m pytest tests/ --cov=shared --cov=core
 ```
 
-### Common Debugging Points
+Test structure mirrors source:
+- `tests/test_events.py` → `shared/events.py`
+- `tests/test_errors.py` → `shared/errors.py`
+- `tests/test_phase4_integration.py` → Integration tests
 
-- **Audio not capturing**: Check `ENERGY_THRESHOLD` in `core/config.py`
-- **Preview not showing**: Check SSE connection in browser console (F12)
-- **Paste not working**: Check `RESTORE_CLIPBOARD` and `PASTE_DELAY_SECONDS`
-- **High memory usage**: May be in deep sleep, check `is_deep_sleeping` state
+---
 
-## Important Notes
+## Common Patterns
 
-- **Windows-specific**: Uses `pythonw.exe` for background launch, batch scripts for process management
-- **GPU support**: Automatically uses CUDA if available, configure in `core/config.py:DEVICE`
-- **French language focus**: Default `LANGUAGE = "fr"`, change in `core/config.py` for other languages
-- **No pip requirements.txt**: Dependencies are listed in README but not in a requirements file yet
+### Adding a New Event
 
-## Future Development: AutoGen Integration
+1. Add to `shared/events.py:Events`:
+```python
+class Events(Enum):
+    MY_NEW_EVENT = auto()
+```
 
-The architecture is prepared for AutoGen text reformulation:
+2. Publish where needed:
+```python
+EventBus.publish(Events.MY_NEW_EVENT, data="value")
+```
 
-1. Core captures and pastes text (done)
-2. UI visualizes transcription (done)
-3. API provides SSE transport (done)
-4. **TODO**: Add AutoGen agents in `services/` for text reformulation
-5. **TODO**: Activate endpoints in `api/routes/text_processing.py`
-6. **TODO**: Add UI buttons in visualizer for reformulation triggers
+3. Subscribe in handlers:
+```python
+EventBus.subscribe(Events.MY_NEW_EVENT, my_handler)
+```
 
-See ARCHITECTURE.md and services/README.md for detailed integration plan.
+### Adding Configuration
+
+1. Add to `shared/settings.py` in appropriate section
+2. Export in `shared/config.py`
+3. Use via `from shared import config`
+
+### Thread-Safe Operations
+
+```python
+from shared.threading_utils import TimeoutLock
+
+lock = TimeoutLock(timeout=5.0, name="my_operation")
+with lock:
+    # Protected operation
+    # Raises TimeoutError if lock not acquired in 5s
+```
+
+### Safe Broadcasting
+
+```python
+from shared.service_utils import get_broadcaster, broadcast_preview_safe
+
+# Option 1: Check and use
+broadcaster = get_broadcaster()
+if broadcaster:
+    broadcaster.send_preview(ctx, "text")
+
+# Option 2: Safe wrapper (never raises)
+broadcast_preview_safe(ctx, "text")  # Returns False if no broadcaster
+```
+
+---
+
+## File Naming Conventions
+
+- `config.py` - Module configuration constants
+- `settings.py` - Pydantic settings model
+- `*_detector.py` - Detection/analysis components
+- `*_utils.py` - Utility functions
+- `test_*.py` - Test files (mirror source structure)
+
+## Import Conventions
+
+```python
+# Standard library
+from __future__ import annotations
+import threading
+from typing import TYPE_CHECKING, Optional
+
+# Third-party
+import numpy as np
+
+# Local - always use relative for same package
+from .models import transcribe_production
+from shared import config
+from shared.context import AppContext
+
+# TYPE_CHECKING guard for circular imports
+if TYPE_CHECKING:
+    from core.voice_detector import VoiceDetector
+```

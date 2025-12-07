@@ -124,28 +124,6 @@ def normalize_audio(audio: np.ndarray, target_peak: float = 0.95) -> np.ndarray:
     return audio
 
 
-def audio_to_mono(audio: np.ndarray) -> np.ndarray:
-    """
-    Convert stereo audio to mono by averaging channels.
-
-    Args:
-        audio: Input audio (1D or 2D array)
-
-    Returns:
-        Mono audio as 1D array
-    """
-    if audio.ndim == 1:
-        return audio
-    elif audio.ndim == 2:
-        if audio.shape[0] == 2:
-            # Shape is (2, samples) - channels first
-            return audio.mean(axis=0).astype(audio.dtype)
-        elif audio.shape[1] == 2:
-            # Shape is (samples, 2) - channels last
-            return audio.mean(axis=1).astype(audio.dtype)
-    return audio.squeeze()
-
-
 def estimate_pitch_autocorr(
     audio: np.ndarray,
     sample_rate: int,
@@ -207,8 +185,10 @@ def estimate_pitch_autocorr(
     return float(pitch)
 
 
-# Constants for audio analysis
-SPEECH_ZCR_MIN = 0.02  # Minimum ZCR for typical speech
-SPEECH_ZCR_MAX = 0.30  # Maximum ZCR for typical speech
-SPEECH_F0_MIN = 70.0   # Minimum fundamental frequency (Hz)
-SPEECH_F0_MAX = 400.0  # Maximum fundamental frequency (Hz)
+# Re-export constants for backwards compatibility
+from shared.constants import (
+    SPEECH_ZCR_MIN,
+    SPEECH_ZCR_MAX,
+    SPEECH_F0_MIN,
+    SPEECH_F0_MAX,
+)

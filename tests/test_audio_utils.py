@@ -8,7 +8,6 @@ from shared.audio_utils import (
     calculate_zcr,
     validate_audio,
     normalize_audio,
-    audio_to_mono,
     estimate_pitch_autocorr,
     SPEECH_ZCR_MIN,
     SPEECH_ZCR_MAX,
@@ -161,30 +160,6 @@ class TestNormalizeAudio:
         audio = np.zeros(100, dtype=np.float32)
         result = normalize_audio(audio)
         assert np.all(result == 0)
-
-
-class TestAudioToMono:
-    """Tests for stereo to mono conversion."""
-
-    def test_mono_unchanged(self):
-        """Mono audio should be returned as-is."""
-        audio = np.ones(100, dtype=np.float32)
-        result = audio_to_mono(audio)
-        assert np.array_equal(result, audio)
-
-    def test_stereo_channels_first(self):
-        """Stereo with channels first should be averaged."""
-        audio = np.array([[1, 1, 1], [3, 3, 3]], dtype=np.float32)  # (2, 3)
-        result = audio_to_mono(audio)
-        assert result.shape == (3,)
-        assert np.all(result == 2.0)
-
-    def test_stereo_channels_last(self):
-        """Stereo with channels last should be averaged."""
-        audio = np.array([[1, 3], [1, 3], [1, 3]], dtype=np.float32)  # (3, 2)
-        result = audio_to_mono(audio)
-        assert result.shape == (3,)
-        assert np.all(result == 2.0)
 
 
 class TestEstimatePitchAutocorr:

@@ -1,121 +1,193 @@
-"""Shared configuration - Imports and re-exports all module configs."""
+"""Shared configuration - Bridge between Pydantic settings and legacy constants.
+
+This module provides backward compatibility by exporting configuration values
+as module-level constants while using Pydantic settings as the source of truth.
+
+Usage:
+    # Legacy style (still works)
+    from shared import config
+    sample_rate = config.SAMPLE_RATE
+
+    # New recommended style
+    from shared.settings import settings
+    sample_rate = settings.audio.sample_rate
+"""
 
 from __future__ import annotations
 
-# Import core config
-from core.config import (
-    APPEND_SPACE,
-    BEAM_SIZE,
-    BEST_OF,
-    BLOCK_SECONDS,
-    CONDITION_ON_PREVIOUS,
-    DEVICE,
-    ENABLE_PREVIEW,
-    ENABLE_PRODUCTION,
-    ENABLE_TRANSCRIPTION,
-    ENERGY_THRESHOLD,
-    EXECUTOR_MAX_WORKERS,
-    FLOAT_PRECISION,
-    LANGUAGE,
-    MODEL_NUM_WORKERS,
-    PASTE_DELAY_SECONDS,
-    PREVIEW_TIMEOUT,
-    PREVIEW_UPDATE_INTERVAL,
-    PREVIEW_WINDOW_SECONDS,
-    RESTORE_CLIPBOARD,
-    SAMPLE_RATE,
-    SILENCE_BLOCKS_BEFORE_FLUSH,
-    TEMPERATURE,
-    VAD_FILTER,
-    WHISPER_MODEL,
-    WORD_TIMESTAMPS,
-    # Voice detection
-    ENABLE_ADVANCED_VAD,
-    SILERO_THRESHOLD,
-    USE_ZCR_FILTER,
-    ZCR_MIN,
-    ZCR_MAX,
-    DEBUG_VAD,
-    USE_ADAPTIVE_DETECTION,
-    ADAPTIVE_BOOST_FACTOR,
-    ADAPTIVE_WINDOW_SECONDS,
-    DEBUG_AUDIO_LEVEL,
-    # Buffer limits
-    MAX_PRODUCTION_SECONDS,
-    MAX_PRODUCTION_BLOCKS,
-    # Noise reduction
-    ENABLE_NOISE_REDUCTION,
-    NOISE_REDUCTION_STRENGTH,
-    NOISE_STATIONARY,
-    # Whisper prompts
-    INITIAL_PROMPT,
-    VOCABULARY_BOOST,
-    # Phrase detection
-    ENABLE_PHRASE_DETECTION,
-    ENERGY_DROP_THRESHOLD,
-    ENERGY_HISTORY_BLOCKS,
-    # Speaker verification
-    ENABLE_SPEAKER_VERIFICATION,
-    SPEAKER_SIMILARITY_THRESHOLD,
-    SPEAKER_EMBEDDING_PATH,
-)
+from shared.settings import settings
 
-# Import API config
-from api.config import SSE_HOST, SSE_PORT
+# =============================================================================
+# Feature Flags
+# =============================================================================
 
-# Import UI config
-from ui.config import (
-    VISUALIZER_KILL_TIMEOUT,
-    VISUALIZER_READY_DELAY,
-    VISUALIZER_START_DELAY,
-    VISUALIZER_STOP_TIMEOUT,
-)
+ENABLE_TRANSCRIPTION: bool = settings.features.enable_transcription
+ENABLE_PREVIEW: bool = settings.features.enable_preview
+ENABLE_PRODUCTION: bool = settings.features.enable_production
+ENABLE_ADVANCED_VAD: bool = settings.features.enable_advanced_vad
+ENABLE_NOISE_REDUCTION: bool = settings.features.enable_noise_reduction
+ENABLE_PHRASE_DETECTION: bool = settings.features.enable_phrase_detection
+ENABLE_SPEAKER_VERIFICATION: bool = settings.features.enable_speaker_verification
+ENABLE_SYSTEM_TRAY: bool = settings.features.enable_system_tray
 
 
-# ============================================================================
-# SLEEP / HOTKEY - Gestion du mode veille et raccourcis clavier
-# ============================================================================
+# =============================================================================
+# Audio Configuration
+# =============================================================================
 
-# Délai d'inactivité avant activation automatique du mode veille en secondes
-# 30 secondes sans parole = passage en veille (équivalent à F9 OFF)
-AUTO_SLEEP_SECONDS = 30.0
+SAMPLE_RATE: int = settings.audio.sample_rate
+BLOCK_SECONDS: float = settings.audio.block_seconds
+ENERGY_THRESHOLD: float = settings.audio.energy_threshold
+SILENCE_BLOCKS_BEFORE_FLUSH: int = settings.audio.silence_blocks_before_flush
+MAX_PRODUCTION_SECONDS: float = settings.audio.max_production_seconds
+MAX_PRODUCTION_BLOCKS: int = settings.audio.max_production_blocks
 
-# Touche de raccourci pour basculer veille/actif
-# "F9" = Appui sur F9 pour activer/désactiver
-HOTKEY_TOGGLE = "F9"
 
-# Fenêtre temporelle pour détecter une séquence de touches en secondes
-# 0.6s = Délai max entre pressions de touches pour une séquence
-HOTKEY_SEQUENCE_WINDOW = 0.6
+# =============================================================================
+# VAD (Voice Activity Detection)
+# =============================================================================
 
-# Délai minimum entre deux bascules veille/actif en secondes
-# 1.0s = Évite les bascules accidentelles et race conditions pendant rechargement modèles
-TOGGLE_COOLDOWN_SECONDS = 1.0
+SILERO_THRESHOLD: float = settings.vad.silero_threshold
+USE_ZCR_FILTER: bool = settings.vad.use_zcr_filter
+ZCR_MIN: float = settings.vad.zcr_min
+ZCR_MAX: float = settings.vad.zcr_max
+USE_ADAPTIVE_DETECTION: bool = settings.vad.use_adaptive_detection
+ADAPTIVE_BOOST_FACTOR: float = settings.vad.adaptive_boost_factor
+ADAPTIVE_WINDOW_SECONDS: float = settings.vad.adaptive_window_seconds
+DEBUG_VAD: bool = settings.vad.debug_vad
+DEBUG_AUDIO_LEVEL: bool = settings.vad.debug_audio_level
 
-# Durée en veille avant passage en veille profonde (décharge modèles)
-# 1800 secondes = 30 minutes
-DEEP_SLEEP_SECONDS = 1800
 
-# Debug: active des logs additionnels pour diagnostiquer l'auto-veille
-# False = logs désactivés (comportement normal)
-DEBUG_AUTO_SLEEP = False
+# =============================================================================
+# Whisper Model Configuration
+# =============================================================================
 
-# System Tray: afficher une icône dans la barre système (Ubuntu/Linux)
-# True = Icône système avec menu pour contrôler l'application
-# False = Pas d'icône système (mode simple)
-# NOTE: Désactivé car incompatible avec mode daemon (nécessite Qt dans processus principal)
-ENABLE_SYSTEM_TRAY = False
+WHISPER_MODEL: str = settings.model.whisper_model
+DEVICE: str = settings.model.device
+FLOAT_PRECISION: str = settings.model.float_precision
+MODEL_NUM_WORKERS: int = settings.model.num_workers
+LANGUAGE: str = settings.model.language
+BEAM_SIZE: int = settings.model.beam_size
+VAD_FILTER: bool = settings.model.vad_filter
+CONDITION_ON_PREVIOUS: bool = settings.model.condition_on_previous
+WORD_TIMESTAMPS: bool = settings.model.word_timestamps
+BEST_OF: int = settings.model.best_of
+TEMPERATURE: float = settings.model.temperature
+INITIAL_PROMPT: str | None = settings.model.initial_prompt
+VOCABULARY_BOOST: list[str] = settings.model.vocabulary_boost
 
+
+# =============================================================================
+# Preview Configuration
+# =============================================================================
+
+PREVIEW_WINDOW_SECONDS: float = settings.preview.window_seconds
+PREVIEW_UPDATE_INTERVAL: float = settings.preview.update_interval
+PREVIEW_TIMEOUT: float = settings.preview.timeout
+
+
+# =============================================================================
+# Production Configuration
+# =============================================================================
+
+RESTORE_CLIPBOARD: bool = settings.production.restore_clipboard
+PASTE_DELAY_SECONDS: float = settings.production.paste_delay_seconds
+APPEND_SPACE: bool = settings.production.append_space
+
+
+# =============================================================================
+# Noise Reduction Configuration
+# =============================================================================
+
+NOISE_REDUCTION_STRENGTH: float = settings.noise_reduction.strength
+NOISE_STATIONARY: bool = settings.noise_reduction.stationary
+
+
+# =============================================================================
+# Phrase Detection Configuration
+# =============================================================================
+
+ENERGY_DROP_THRESHOLD: float = settings.phrase_detection.energy_drop_threshold
+ENERGY_HISTORY_BLOCKS: int = settings.phrase_detection.energy_history_blocks
+
+
+# =============================================================================
+# Speaker Verification Configuration
+# =============================================================================
+
+SPEAKER_SIMILARITY_THRESHOLD: float = settings.speaker_verification.similarity_threshold
+SPEAKER_EMBEDDING_PATH: str = settings.speaker_verification.embedding_path
+
+
+# =============================================================================
+# Server Configuration
+# =============================================================================
+
+SSE_HOST: str = settings.server.host
+SSE_PORT: int = settings.server.port
+
+
+# =============================================================================
+# Visualizer Configuration
+# =============================================================================
+
+VISUALIZER_READY_DELAY: float = settings.visualizer.ready_delay
+VISUALIZER_START_DELAY: float = settings.visualizer.start_delay
+VISUALIZER_STOP_TIMEOUT: float = settings.visualizer.stop_timeout
+VISUALIZER_KILL_TIMEOUT: float = settings.visualizer.kill_timeout
+
+
+# =============================================================================
+# Sleep Configuration
+# =============================================================================
+
+AUTO_SLEEP_SECONDS: float = settings.sleep.auto_sleep_seconds
+DEEP_SLEEP_SECONDS: float = settings.sleep.deep_sleep_seconds
+HOTKEY_TOGGLE: str = settings.sleep.hotkey_toggle
+HOTKEY_SEQUENCE_WINDOW: float = settings.sleep.hotkey_sequence_window
+TOGGLE_COOLDOWN_SECONDS: float = settings.sleep.toggle_cooldown_seconds
+DEBUG_AUTO_SLEEP: bool = settings.sleep.debug_auto_sleep
+
+
+# =============================================================================
+# Miscellaneous
+# =============================================================================
+
+EXECUTOR_MAX_WORKERS: int = settings.misc.executor_max_workers
+
+
+# =============================================================================
+# Public API
+# =============================================================================
 
 __all__ = [
-    # Core
+    # Feature flags
     "ENABLE_TRANSCRIPTION",
     "ENABLE_PREVIEW",
     "ENABLE_PRODUCTION",
+    "ENABLE_ADVANCED_VAD",
+    "ENABLE_NOISE_REDUCTION",
+    "ENABLE_PHRASE_DETECTION",
+    "ENABLE_SPEAKER_VERIFICATION",
+    "ENABLE_SYSTEM_TRAY",
+    # Audio
     "SAMPLE_RATE",
     "BLOCK_SECONDS",
     "ENERGY_THRESHOLD",
     "SILENCE_BLOCKS_BEFORE_FLUSH",
+    "MAX_PRODUCTION_SECONDS",
+    "MAX_PRODUCTION_BLOCKS",
+    # VAD
+    "SILERO_THRESHOLD",
+    "USE_ZCR_FILTER",
+    "ZCR_MIN",
+    "ZCR_MAX",
+    "USE_ADAPTIVE_DETECTION",
+    "ADAPTIVE_BOOST_FACTOR",
+    "ADAPTIVE_WINDOW_SECONDS",
+    "DEBUG_VAD",
+    "DEBUG_AUDIO_LEVEL",
+    # Whisper
     "WHISPER_MODEL",
     "DEVICE",
     "FLOAT_PRECISION",
@@ -127,56 +199,42 @@ __all__ = [
     "WORD_TIMESTAMPS",
     "BEST_OF",
     "TEMPERATURE",
+    "INITIAL_PROMPT",
+    "VOCABULARY_BOOST",
+    # Preview
     "PREVIEW_WINDOW_SECONDS",
     "PREVIEW_UPDATE_INTERVAL",
     "PREVIEW_TIMEOUT",
+    # Production
     "RESTORE_CLIPBOARD",
     "PASTE_DELAY_SECONDS",
     "APPEND_SPACE",
-    "EXECUTOR_MAX_WORKERS",
-    # Voice detection
-    "ENABLE_ADVANCED_VAD",
-    "SILERO_THRESHOLD",
-    "USE_ZCR_FILTER",
-    "ZCR_MIN",
-    "ZCR_MAX",
-    "DEBUG_VAD",
-    "USE_ADAPTIVE_DETECTION",
-    "ADAPTIVE_BOOST_FACTOR",
-    "ADAPTIVE_WINDOW_SECONDS",
-    "DEBUG_AUDIO_LEVEL",
-    # Buffer limits
-    "MAX_PRODUCTION_SECONDS",
-    "MAX_PRODUCTION_BLOCKS",
     # Noise reduction
-    "ENABLE_NOISE_REDUCTION",
     "NOISE_REDUCTION_STRENGTH",
     "NOISE_STATIONARY",
-    # Whisper prompts
-    "INITIAL_PROMPT",
-    "VOCABULARY_BOOST",
     # Phrase detection
-    "ENABLE_PHRASE_DETECTION",
     "ENERGY_DROP_THRESHOLD",
     "ENERGY_HISTORY_BLOCKS",
     # Speaker verification
-    "ENABLE_SPEAKER_VERIFICATION",
     "SPEAKER_SIMILARITY_THRESHOLD",
     "SPEAKER_EMBEDDING_PATH",
-    # API
-    "SSE_PORT",
+    # Server
     "SSE_HOST",
-    # UI
+    "SSE_PORT",
+    # Visualizer
     "VISUALIZER_READY_DELAY",
     "VISUALIZER_START_DELAY",
     "VISUALIZER_STOP_TIMEOUT",
     "VISUALIZER_KILL_TIMEOUT",
-    # Shared
+    # Sleep
     "AUTO_SLEEP_SECONDS",
+    "DEEP_SLEEP_SECONDS",
     "HOTKEY_TOGGLE",
     "HOTKEY_SEQUENCE_WINDOW",
     "TOGGLE_COOLDOWN_SECONDS",
-    "DEEP_SLEEP_SECONDS",
     "DEBUG_AUTO_SLEEP",
-    "ENABLE_SYSTEM_TRAY",
+    # Misc
+    "EXECUTOR_MAX_WORKERS",
+    # Settings object for direct access
+    "settings",
 ]

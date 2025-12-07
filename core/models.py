@@ -1,4 +1,12 @@
-"""Whisper model initialization and transcription helpers."""
+"""Whisper model initialization and transcription helpers.
+
+This module handles:
+- Model loading with automatic device detection and fallback
+- Transcription for both preview and production modes
+- Hallucination filtering to reduce Whisper artifacts
+
+Uses the centralized error handling system for consistent error management.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +17,14 @@ import numpy as np
 from faster_whisper import WhisperModel
 
 from shared import config
+from shared.audio_utils import validate_audio
+from shared.constants import LOG_PREFIX_FILTER, LOG_PREFIX_WHISPER
 from shared.context import AppContext
+from shared.errors import (
+    ModelLoadError,
+    handle_errors,
+)
+from shared.events import EventBus, Events
 from shared.logger import log_info, log_warn, log_error
 
 
@@ -57,9 +72,9 @@ def _load_model(name: str, device: str) -> WhisperModel:
         Modèle Whisper chargé
 
     Raises:
-        Exception: Si le chargement échoue
+        ModelLoadError: Si le chargement échoue
     """
-    log_info(f"📥 Chargement modèle '{name}' sur device '{device}'...")
+    log_info(f"Chargement modèle '{name}' sur device '{device}'...")
 
     try:
         model = WhisperModel(
@@ -68,13 +83,15 @@ def _load_model(name: str, device: str) -> WhisperModel:
             compute_type=config.FLOAT_PRECISION if device == "cuda" else "int8",
             num_workers=config.MODEL_NUM_WORKERS,
         )
-        log_info(f"   ✅ Modèle '{name}' chargé avec succès")
+        log_info(f"   Modèle '{name}' chargé avec succès")
         return model
     except Exception as exc:
-        log_error(f"   ❌ Échec chargement modèle '{name}' sur '{device}': {exc}")
-        raise
+        error_msg = f"Échec chargement modèle '{name}' sur '{device}': {exc}"
+        log_error(f"   {error_msg}")
+        raise ModelLoadError(error_msg, cause=exc) from exc
 
 
+@handle_errors(log_prefix="[Models]", reraise=True)
 def init_models(ctx: AppContext) -> None:
     """Load whisper model if not loaded already.
 
@@ -84,8 +101,13 @@ def init_models(ctx: AppContext) -> None:
     3. Si échec, essaie modèle "small" (très léger)
     4. Si échec, lève une exception
 
+    Publishes:
+        - MODEL_LOADING_STARTED: When model loading begins
+        - MODEL_LOADING_COMPLETE: When model loaded successfully
+        - MODEL_LOADING_FAILED: When all loading attempts fail
+
     Raises:
-        Exception: Si aucun modèle n'a pu être chargé
+        ModelLoadError: Si aucun modèle n'a pu être chargé
     """
     # Skip si transcription désactivée
     if not config.ENABLE_TRANSCRIPTION:
@@ -98,6 +120,9 @@ def init_models(ctx: AppContext) -> None:
             log_info("ℹ️  Modèle déjà chargé, skip")
             return
 
+        # Publish loading started event
+        EventBus.publish(Events.MODEL_LOADING_STARTED, model=config.WHISPER_MODEL)
+
         # Détecter le device disponible
         device = _detect_device()
 
@@ -109,30 +134,59 @@ def init_models(ctx: AppContext) -> None:
             models_to_try.append("small")  # Fallback 2
 
         # Essayer de charger les modèles dans l'ordre
+        last_error: Optional[Exception] = None
         for model_name in models_to_try:
             try:
                 ctx.model = _load_model(model_name, device)
                 if model_name != config.WHISPER_MODEL:
-                    log_warn(f"⚠️ Utilisation du modèle de fallback '{model_name}' au lieu de '{config.WHISPER_MODEL}'")
+                    log_warn(f"Utilisation du modèle de fallback '{model_name}' au lieu de '{config.WHISPER_MODEL}'")
+
+                # Publish loading complete event
+                EventBus.publish(
+                    Events.MODEL_LOADING_COMPLETE,
+                    model=model_name,
+                    device=device,
+                    is_fallback=(model_name != config.WHISPER_MODEL)
+                )
                 return  # Succès !
-            except Exception as exc:
-                log_error(f"   ❌ Échec: {exc}")
+            except ModelLoadError as exc:
+                last_error = exc
+                log_error(f"   Échec: {exc}")
                 if model_name == models_to_try[-1]:
                     # C'était le dernier modèle, échec total
-                    log_error("❌ ÉCHEC TOTAL: Aucun modèle Whisper n'a pu être chargé")
-                    raise Exception(f"Impossible de charger un modèle Whisper. Dernier essai: {model_name}") from exc
+                    log_error("ÉCHEC TOTAL: Aucun modèle Whisper n'a pu être chargé")
+
+                    # Publish loading failed event
+                    EventBus.publish(
+                        Events.MODEL_LOADING_FAILED,
+                        error=str(exc),
+                        attempted_models=models_to_try
+                    )
+
+                    raise ModelLoadError(
+                        f"Impossible de charger un modèle Whisper. Dernier essai: {model_name}",
+                        cause=last_error
+                    ) from exc
                 else:
-                    log_warn(f"   ⚠️ Tentative de fallback sur modèle plus léger...")
+                    log_warn(f"   Tentative de fallback sur modèle plus léger...")
 
 
+@handle_errors(log_prefix="[Models]", reraise=False)
 def unload_models(ctx: AppContext) -> None:
-    """Unload whisper model to free memory (deep sleep mode)."""
+    """Unload whisper model to free memory (deep sleep mode).
+
+    Publishes:
+        - MODEL_UNLOADED: When model is successfully unloaded
+    """
     with ctx.model_lock:
         if ctx.model is not None:
             log_info("🗑️  Déchargement modèle Whisper...")
             del ctx.model
             ctx.model = None
             log_info("   ✅ Modèle déchargé")
+
+            # Publish model unloaded event
+            EventBus.publish(Events.MODEL_UNLOADED)
 
         # Force garbage collection pour libérer immédiatement la mémoire
         gc.collect()
@@ -205,7 +259,7 @@ def _is_hallucination(text: str) -> bool:
     # Vérifie si le texte contient un pattern d'hallucination
     for pattern in HALLUCINATION_PATTERNS:
         if pattern in text_lower:
-            print(f"[Filter] Hallucination détectée: '{pattern}' dans '{text[:50]}...'")
+            log_info(f"{LOG_PREFIX_FILTER} Hallucination détectée: '{pattern}' dans '{text[:50]}...'")
             return True
 
     # Texte répétitif (même mot/phrase répété)
@@ -214,7 +268,7 @@ def _is_hallucination(text: str) -> bool:
         # Si plus de 60% des mots sont identiques, c'est suspect
         unique_words = set(words)
         if len(unique_words) / len(words) < 0.4:
-            print(f"[Filter] Texte répétitif détecté: '{text[:50]}...'")
+            log_info(f"{LOG_PREFIX_FILTER} Texte répétitif détecté: '{text[:50]}...'")
             return True
 
     return False
@@ -243,13 +297,24 @@ def _flatten(audio: np.ndarray) -> np.ndarray:
     return audio.flatten()
 
 
+@handle_errors(log_prefix=LOG_PREFIX_WHISPER, reraise=False, default_return=None)
 def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
-    """Run transcription with the unified model configuration."""
+    """Run transcription with the unified model configuration.
+
+    Uses the centralized error handling decorator for consistent error management.
+    Returns None on any error to allow graceful degradation.
+    """
+    # Validate and normalize audio
+    try:
+        audio_flat = validate_audio(_flatten(audio), min_length=512)
+    except ValueError as e:
+        log_warn(f"{LOG_PREFIX_WHISPER} Audio invalide: {e}")
+        return None
+
     # Debug: log audio stats
-    audio_flat = _flatten(audio)
     duration_sec = len(audio_flat) / config.SAMPLE_RATE
     audio_rms = np.sqrt(np.mean(np.square(audio_flat), dtype=np.float64))
-    print(f"[Whisper] Audio: {duration_sec:.2f}s, RMS={audio_rms:.4f}, samples={len(audio_flat)}", flush=True)
+    log_info(f"{LOG_PREFIX_WHISPER} Audio: {duration_sec:.2f}s, RMS={audio_rms:.4f}, samples={len(audio_flat)}")
 
     # Build initial prompt from config
     initial_prompt = getattr(config, 'INITIAL_PROMPT', None)
@@ -273,21 +338,28 @@ def _run_transcription(model: WhisperModel, audio: np.ndarray) -> Optional[str]:
     if initial_prompt:
         params["initial_prompt"] = initial_prompt
 
+    # Run transcription with error handling
     try:
         segments, info = model.transcribe(audio_flat, **params)
         segments_list = list(segments)  # Consommer le générateur
-        print(f"[Whisper] Got {len(segments_list)} segments, language={info.language}, prob={info.language_probability:.2f}", flush=True)
+        log_info(f"{LOG_PREFIX_WHISPER} Got {len(segments_list)} segments, language={info.language}, prob={info.language_probability:.2f}")
     except Exception as exc:
-        log_warn(f"⚠️ Erreur transcription: {exc}")
+        # Log error but don't raise - return None for graceful degradation
+        log_warn(f"{LOG_PREFIX_WHISPER} Erreur transcription: {exc}")
         return None
 
     text = "".join(segment.text for segment in segments_list).strip()
-    print(f"[Whisper] Result: '{text[:50] if text else '(empty)'}...'", flush=True)
+    log_info(f"{LOG_PREFIX_WHISPER} Result: '{text[:50] if text else '(empty)'}...'")
     return text or None
 
 
+@handle_errors(log_prefix="[Preview]", reraise=False, default_return=None)
 def transcribe_preview(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
-    """Transcribe audio for preview using the main model."""
+    """Transcribe audio for preview using the main model.
+
+    Uses error handling decorator for graceful degradation on failures.
+    Returns None if model not loaded or transcription fails.
+    """
     if ctx.model is None:
         init_models(ctx)
     if ctx.model is None:
@@ -296,8 +368,13 @@ def transcribe_preview(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
     return _filter_hallucinations(text)
 
 
+@handle_errors(log_prefix="[Production]", reraise=False, default_return=None)
 def transcribe_production(ctx: AppContext, audio: np.ndarray) -> Optional[str]:
-    """Transcribe audio for production using the main model."""
+    """Transcribe audio for production using the main model.
+
+    Uses error handling decorator for graceful degradation on failures.
+    Returns None if model not loaded or transcription fails.
+    """
     if ctx.model is None:
         init_models(ctx)
     if ctx.model is None:
