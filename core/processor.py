@@ -37,6 +37,7 @@ from .audio_capture import detect_activity, paste_via_clipboard
 from .audio_preprocessing import preprocess_audio
 from .models import transcribe_preview, transcribe_production
 from .phrase_detector import PhraseEndDetector
+from .pipeline import AudioBuffer, PreviewManager, ProductionManager
 
 if TYPE_CHECKING:
     from shared.context import AppContext
@@ -210,17 +211,23 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             if audio_block is None:
                 continue
 
-            # Detect voice activity and broadcast VAD state changes
-            is_voice = detect_activity(audio_block, ctx.voice_detector)
-            if is_voice != was_voice:
+            # Detect voice activity (or bypass if enabled)
+            raw_is_voice = detect_activity(audio_block, ctx.voice_detector)
+
+            # Apply VAD bypass: if enabled, treat ALL audio as voice
+            with ctx.vad_bypass_lock:
+                is_voice = True if ctx.vad_bypass else raw_is_voice
+
+            # Broadcast VAD state changes (use raw value for UI feedback)
+            if raw_is_voice != was_voice:
                 if broadcaster:
-                    broadcaster.send_vad(ctx, is_voice)
+                    broadcaster.send_vad(ctx, raw_is_voice)
                 # Publish voice detection event
-                if is_voice:
+                if raw_is_voice:
                     EventBus.publish(Events.VOICE_DETECTED, is_voice=True)
                 else:
                     EventBus.publish(Events.SILENCE_DETECTED, is_voice=False)
-                was_voice = is_voice
+                was_voice = raw_is_voice
 
             phrase_detector.update(audio_block, not is_voice)
 

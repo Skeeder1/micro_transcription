@@ -82,6 +82,12 @@ def run() -> int:
 
     ctx = AppContext()
 
+    # Charger les paramètres persistants (vad_bypass, etc.)
+    from shared.persistence import load_settings
+    user_settings = load_settings()
+    ctx.vad_bypass = user_settings["vad_bypass"]
+    log_info(f"[Init] VAD bypass: {'ON' if ctx.vad_bypass else 'OFF'}")
+
     # Vérifier que last_speech_time est bien initialisé à maintenant
     log_info(f"[Init] AppContext created at {time.strftime('%H:%M:%S', time.localtime(ctx.last_speech_time))}")
     log_info(f"[Init] Current time is {time.strftime('%H:%M:%S', time.localtime(time.time()))}")

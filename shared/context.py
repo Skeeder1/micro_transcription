@@ -100,6 +100,8 @@ class AudioContext:
     is_recording: bool = True  # True = capture audio, False = ignore audio
     recording_lock: threading.Lock = field(default_factory=threading.Lock)
     force_flush: bool = False  # Signal to processor to force transcription
+    vad_bypass: bool = False  # Bypass VAD when True (record all audio)
+    vad_bypass_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def clear_queue(self) -> None:
         """Clear all pending audio blocks."""
@@ -301,6 +303,19 @@ class AppContext:
     @force_flush.setter
     def force_flush(self, value: bool) -> None:
         self.audio.force_flush = value
+
+    @property
+    def vad_bypass(self) -> bool:
+        return self.audio.vad_bypass
+
+    @vad_bypass.setter
+    def vad_bypass(self, value: bool) -> None:
+        with self.audio.vad_bypass_lock:
+            self.audio.vad_bypass = value
+
+    @property
+    def vad_bypass_lock(self) -> threading.Lock:
+        return self.audio.vad_bypass_lock
 
     # -------------------------------------------------------------------------
     # UI properties (delegate to ui sub-context)

@@ -13,6 +13,8 @@ console.log('[Visualizer] Starting...');
 const panel = document.querySelector('.panel');
 const recBtn = document.querySelector('#rec-btn');
 const recIcon = document.querySelector('.rec-icon');
+const vadBypassBtn = document.querySelector('#vad-bypass-btn');
+const vadBypassIcon = document.querySelector('.vad-bypass-icon');
 const statusLabel = document.querySelector('#status');
 const statusSpinner = document.querySelector('#status-spinner');
 const previewText = document.querySelector('#preview-text');
@@ -44,6 +46,12 @@ let waveformHistory = new Array(HISTORY_LENGTH).fill(0);
 
 let eventSource = null;
 let sseReconnectTimer = null;
+
+// ===========================================
+// VAD Bypass State
+// ===========================================
+
+let vadBypassEnabled = false;
 
 // ===========================================
 // Status Management
@@ -173,6 +181,53 @@ const handleProcessingChange = (state) => {
 };
 
 // ===========================================
+// VAD Bypass Toggle
+// ===========================================
+
+const updateVadBypassUI = () => {
+  if (vadBypassBtn) {
+    if (vadBypassEnabled) {
+      vadBypassBtn.classList.remove('vad-bypass-off');
+      vadBypassBtn.classList.add('vad-bypass-on');
+      vadBypassBtn.title = 'VAD bypass ON (enregistre tout)';
+    } else {
+      vadBypassBtn.classList.remove('vad-bypass-on');
+      vadBypassBtn.classList.add('vad-bypass-off');
+      vadBypassBtn.title = 'Bypass VAD (enregistrer tout)';
+    }
+  }
+};
+
+const toggleVadBypass = async () => {
+  const ssePort = window.SSE_PORT || 5433;
+  const newState = !vadBypassEnabled;
+
+  try {
+    const resp = await fetch('http://127.0.0.1:' + ssePort + '/settings/vad-bypass', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vad_bypass: newState })
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      vadBypassEnabled = data.vad_bypass;
+      updateVadBypassUI();
+      console.log('[VAD] Bypass ' + (vadBypassEnabled ? 'enabled' : 'disabled'));
+    } else {
+      console.error('[VAD] Error toggling bypass:', resp.status);
+    }
+  } catch (e) {
+    console.error('[VAD] Error toggling bypass:', e);
+  }
+};
+
+// Add click handler for VAD bypass button
+if (vadBypassBtn) {
+  vadBypassBtn.addEventListener('click', toggleVadBypass);
+}
+
+// ===========================================
 // SSE Connection
 // ===========================================
 
@@ -250,6 +305,10 @@ const syncInitialState = async () => {
       console.log('[Init] Syncing state:', data);
       handleRecordingChange(data.is_recording ? 'recording' : 'paused');
       handleStateChange(data.is_sleeping ? 'sleep' : 'active');
+
+      // Sync VAD bypass state
+      vadBypassEnabled = data.vad_bypass || false;
+      updateVadBypassUI();
     }
   } catch (e) {
     console.warn('[Init] Could not sync initial state:', e);
