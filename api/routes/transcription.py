@@ -89,9 +89,8 @@ def set_vad_bypass_endpoint() -> Response:
 
     enabled = bool(data["vad_bypass"])
 
-    # Update runtime state
-    with _CTX.vad_bypass_lock:
-        _CTX.vad_bypass = enabled
+    # Update runtime state (setter handles locking - don't double-lock!)
+    _CTX.vad_bypass = enabled
 
     # Persist to file
     success = set_vad_bypass(enabled)

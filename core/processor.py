@@ -211,23 +211,33 @@ def _run_full_transcription(ctx, check_auto_sleep, check_deep_sleep,
             if audio_block is None:
                 continue
 
-            # Detect voice activity (or bypass if enabled)
-            raw_is_voice = detect_activity(audio_block, ctx.voice_detector)
-
-            # Apply VAD bypass: if enabled, treat ALL audio as voice
+            # Check bypass mode FIRST (before calling VAD)
             with ctx.vad_bypass_lock:
-                is_voice = True if ctx.vad_bypass else raw_is_voice
+                bypass_enabled = ctx.vad_bypass
 
-            # Broadcast VAD state changes (use raw value for UI feedback)
-            if raw_is_voice != was_voice:
+            if bypass_enabled:
+                # === BYPASS MODE ===
+                # Skip VAD entirely - record everything until F8
+                is_voice = True
+                raw_is_voice = True  # UI consistency
+            else:
+                # === NORMAL MODE ===
+                # Use Silero VAD for voice detection
+                raw_is_voice = detect_activity(audio_block, ctx.voice_detector)
+                is_voice = raw_is_voice
+
+            # Broadcast VAD state changes (reflects actual recording decision)
+            # is_voice = True means audio goes to buffer (will be transcribed)
+            # This works for both normal mode and bypass mode
+            if is_voice != was_voice:
                 if broadcaster:
-                    broadcaster.send_vad(ctx, raw_is_voice)
+                    broadcaster.send_vad(ctx, is_voice)
                 # Publish voice detection event
-                if raw_is_voice:
+                if is_voice:
                     EventBus.publish(Events.VOICE_DETECTED, is_voice=True)
                 else:
                     EventBus.publish(Events.SILENCE_DETECTED, is_voice=False)
-                was_voice = raw_is_voice
+                was_voice = is_voice
 
             phrase_detector.update(audio_block, not is_voice)
 
@@ -346,8 +356,11 @@ def _handle_voice_activity(ctx, audio_block, buffer, phrase_detector,
     buffer.add_voice_audio(audio_block)
     update_speech_timer(ctx)
 
-    # Check for buffer overflow
-    if buffer.is_production_overflow:
+    # Check for buffer overflow (only if bypass is OFF)
+    with ctx.vad_bypass_lock:
+        bypass_on = ctx.vad_bypass
+
+    if not bypass_on and buffer.is_production_overflow:
         _flush_production_overflow(ctx, buffer, phrase_detector, broadcaster)
         return
 

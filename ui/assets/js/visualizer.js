@@ -185,47 +185,69 @@ const handleProcessingChange = (state) => {
 // ===========================================
 
 const updateVadBypassUI = () => {
-  if (vadBypassBtn) {
+  const btn = vadBypassBtn || document.querySelector('#vad-bypass-btn');
+  console.log('[VAD UI] Updating button, enabled:', vadBypassEnabled, 'btn:', btn);
+  if (btn) {
     if (vadBypassEnabled) {
-      vadBypassBtn.classList.remove('vad-bypass-off');
-      vadBypassBtn.classList.add('vad-bypass-on');
-      vadBypassBtn.title = 'VAD bypass ON (enregistre tout)';
+      btn.classList.remove('vad-bypass-off');
+      btn.classList.add('vad-bypass-on');
+      btn.title = 'VAD bypass ON (enregistre tout)';
+      btn.style.background = 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)';
+      btn.style.borderColor = '#f97316';
+      btn.style.boxShadow = '0 0 12px rgba(249, 115, 22, 0.6)';
     } else {
-      vadBypassBtn.classList.remove('vad-bypass-on');
-      vadBypassBtn.classList.add('vad-bypass-off');
-      vadBypassBtn.title = 'Bypass VAD (enregistrer tout)';
+      btn.classList.remove('vad-bypass-on');
+      btn.classList.add('vad-bypass-off');
+      btn.title = 'Bypass VAD (enregistrer tout)';
+      btn.style.background = '#2d3748';
+      btn.style.borderColor = '#4a5568';
+      btn.style.boxShadow = 'none';
     }
+    console.log('[VAD UI] Button classes:', btn.className);
   }
 };
 
 const toggleVadBypass = async () => {
+  console.log('[VAD] Toggle clicked! Current state:', vadBypassEnabled);
+
+  // Immediate visual feedback
+  vadBypassEnabled = !vadBypassEnabled;
+  updateVadBypassUI();
+
   const ssePort = window.SSE_PORT || 5433;
-  const newState = !vadBypassEnabled;
 
   try {
+    console.log('[VAD] Sending POST to /settings/vad-bypass, newState:', vadBypassEnabled);
     const resp = await fetch('http://127.0.0.1:' + ssePort + '/settings/vad-bypass', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vad_bypass: newState })
+      body: JSON.stringify({ vad_bypass: vadBypassEnabled })
     });
 
+    console.log('[VAD] Response status:', resp.status);
     if (resp.ok) {
       const data = await resp.json();
+      console.log('[VAD] Response data:', data);
+      // Sync with server response
       vadBypassEnabled = data.vad_bypass;
       updateVadBypassUI();
       console.log('[VAD] Bypass ' + (vadBypassEnabled ? 'enabled' : 'disabled'));
     } else {
       console.error('[VAD] Error toggling bypass:', resp.status);
+      // Revert on error
+      vadBypassEnabled = !vadBypassEnabled;
+      updateVadBypassUI();
     }
   } catch (e) {
     console.error('[VAD] Error toggling bypass:', e);
+    // Revert on error
+    vadBypassEnabled = !vadBypassEnabled;
+    updateVadBypassUI();
   }
 };
 
-// Add click handler for VAD bypass button
-if (vadBypassBtn) {
-  vadBypassBtn.addEventListener('click', toggleVadBypass);
-}
+// Expose globally for onclick handler in HTML
+window.toggleVadBypassClick = toggleVadBypass;
 
 // ===========================================
 // SSE Connection
@@ -579,6 +601,9 @@ const initialize = async () => {
 
     // Sync initial state from backend
     await syncInitialState();
+
+    // Note: VAD bypass button uses onclick in HTML (window.toggleVadBypassClick)
+    // No need to add addEventListener here - it would cause double triggers
 
     console.log('[Init] Initialization complete - waveform should be visible!');
 

@@ -12,7 +12,7 @@
         <span class='rec-icon'>⏸️</span>
       </button>
 
-      <button id='vad-bypass-btn' class='vad-bypass-off' title='Bypass VAD (enregistrer tout)'>
+      <button id='vad-bypass-btn' class='vad-bypass-off' title='Bypass VAD (enregistrer tout)' onclick="window.toggleVadBypassClick && window.toggleVadBypassClick()">
         <span class='vad-bypass-icon'>🎚️</span>
       </button>
 
@@ -40,6 +40,49 @@
   <script>
     window.SSE_PORT = {{SSE_PORT}};
     console.log('[HTML] SSE_PORT set to:', window.SSE_PORT);
+
+    // Simple inline VAD bypass toggle (fallback)
+    window.toggleVadBypassClick = function() {
+      console.log('[VAD Inline] Button clicked!');
+      var btn = document.getElementById('vad-bypass-btn');
+      if (!btn) {
+        console.error('[VAD Inline] Button not found!');
+        return;
+      }
+
+      // Toggle state
+      var isOn = btn.classList.contains('vad-bypass-on');
+      console.log('[VAD Inline] Current state:', isOn ? 'ON' : 'OFF');
+
+      if (isOn) {
+        btn.classList.remove('vad-bypass-on');
+        btn.classList.add('vad-bypass-off');
+        btn.style.background = '#2d3748';
+        btn.style.borderColor = '#4a5568';
+        btn.style.boxShadow = 'none';
+      } else {
+        btn.classList.remove('vad-bypass-off');
+        btn.classList.add('vad-bypass-on');
+        btn.style.background = 'linear-gradient(135deg, #f97316 0%, #ea580c 100%)';
+        btn.style.borderColor = '#f97316';
+        btn.style.boxShadow = '0 0 12px rgba(249, 115, 22, 0.6)';
+      }
+
+      console.log('[VAD Inline] New state:', !isOn ? 'ON' : 'OFF');
+
+      // Send to API
+      var ssePort = window.SSE_PORT || 5433;
+      fetch('http://127.0.0.1:' + ssePort + '/settings/vad-bypass', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vad_bypass: !isOn })
+      }).then(function(r) {
+        console.log('[VAD Inline] API response:', r.status);
+      }).catch(function(e) {
+        console.error('[VAD Inline] API error:', e);
+      });
+    };
+    console.log('[HTML] toggleVadBypassClick defined');
   </script>
 
   <!-- Custom canvas waveform - Web Audio API direct -->

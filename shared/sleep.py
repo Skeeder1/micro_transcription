@@ -301,6 +301,13 @@ def toggle_recording(ctx: AppContext) -> bool:
         if broadcaster:
             broadcaster.send_recording(ctx, True)
             broadcaster.send_preview(ctx, "Calibration en cours...")
+
+            # Force VAD state sync when resuming (critical for bypass mode)
+            # Without this, mic button won't turn blue because was_voice == is_voice == True
+            with ctx.vad_bypass_lock:
+                bypass_on = ctx.vad_bypass
+            if bypass_on:
+                broadcaster.send_vad(ctx, True)  # Bypass = always recording
     else:
         # F8 OFF - Pause recording + force transcription
         log_info("[F8] MICRO EN PAUSE (F8 OFF)")
