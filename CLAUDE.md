@@ -16,25 +16,31 @@
 main.py                      # Entry point → core.engine.run()
 │
 ├── core/                    # Audio processing & transcription
+│   ├── config.py            # Core-specific feature flags
 │   ├── engine.py            # Bootstrap, main loop orchestration
 │   ├── processor.py         # Audio pipeline (preview + production)
 │   ├── models.py            # Whisper model loading/inference
 │   ├── audio_capture.py     # Microphone input, clipboard paste
 │   ├── audio_preprocessing.py # Audio filters, normalization
-│   ├── voice_detector.py    # Silero VAD + ZCR detection
-│   ├── phrase_detector.py   # End-of-phrase detection
+│   ├── voice_detector.py    # Silero VAD + ZCR + adaptive detection
+│   ├── phrase_detector.py   # End-of-phrase detection (energy + pitch)
 │   ├── pipeline.py          # AudioBuffer, PreviewManager, ProductionManager
 │   ├── noise_reduction.py   # Spectral noise reduction (optional)
 │   └── speaker_detector.py  # Speaker verification (optional)
 │
 ├── api/                     # Inter-process communication
+│   ├── config.py            # API-specific configuration
 │   ├── server.py            # Flask + SSE broadcasting
 │   └── routes/
-│       └── transcription.py # /events SSE endpoint
+│       ├── transcription.py # /events SSE endpoint
+│       └── text_processing.py # Text processing endpoint
 │
 ├── ui/                      # Qt6 visualizer (subprocess)
+│   ├── config.py            # UI-specific configuration
 │   ├── manager.py           # Subprocess lifecycle
-│   └── visualizer_app.py    # PySide6 WebEngine app
+│   ├── visualizer_app.py    # PySide6 WebEngine app
+│   ├── system_tray.py       # System tray integration (Linux)
+│   └── __main__.py          # Standalone UI entry point
 │
 └── shared/                  # Cross-module utilities
     ├── context.py           # AppContext (global state)
@@ -49,8 +55,11 @@ main.py                      # Entry point → core.engine.run()
     ├── logger.py            # Logging utilities
     ├── audio_utils.py       # Audio processing utilities
     ├── service_utils.py     # Service accessor helpers
-    └── threading_utils.py   # TimeoutLock
+    ├── threading_utils.py   # TimeoutLock
+    └── persistence.py       # User settings persistence (parametre.json)
 ```
+
+**Note**: Each module (core/, api/, ui/) has its own `config.py` for module-specific feature flags, in addition to `shared/config.py` for global configuration.
 
 ---
 
@@ -66,11 +75,10 @@ class AppContext:
     # Sub-contexts
     models: ModelContext       # model, model_lock, voice_detector
     sleep: SleepContext        # is_sleeping, is_deep_sleeping, manual_sleep
-    audio: AudioContext        # audio_queue, is_recording, production_buffer
-    sse: SSEContext            # sse_clients, sse_lock
+    audio: AudioContext        # audio_queue, is_recording, production_buffer, vad_bypass
+    ui: UIContext              # sse_clients, visualizer_proc, visualizer_lock
 
     # Process management
-    visualizer_proc: Optional[subprocess.Popen]
     executor: ThreadPoolExecutor
 
     # Convenience locks (delegate to sub-contexts)
@@ -80,7 +88,18 @@ class AppContext:
     def sse_lock(self) -> threading.Lock
     @property
     def model_lock(self) -> threading.Lock
+    @property
+    def vad_bypass(self) -> bool      # VAD bypass toggle (persistent)
+    @property
+    def vad_bypass_lock(self) -> threading.Lock
 ```
+
+**AudioContext fields**:
+- `audio_queue` - Queue for incoming audio blocks
+- `is_recording` - Whether microphone is active (F8)
+- `production_buffer` - Accumulated audio for transcription
+- `vad_bypass` - Skip VAD, record all audio until F8 OFF
+- `force_flush` - Signal forced transcription (F8/F9 OFF)
 
 **Pattern**: Never access ctx fields without locks:
 ```python
@@ -262,6 +281,56 @@ check_auto_sleep(ctx)   # Auto-sleep after 30s inactivity
 check_deep_sleep(ctx)   # Deep sleep after 30min (unload models)
 ```
 
+### VAD Bypass Mode
+
+When enabled, VAD bypass skips Silero voice detection entirely:
+
+```python
+# In processor.py
+if ctx.vad_bypass:
+    is_voice = True  # Record everything until F8 OFF
+```
+
+**Use cases**:
+- Noisy environments where VAD fails
+- Recording continuous speech without pauses
+- Testing/debugging without VAD interference
+
+**Toggle**: Via UI button or API. Persisted in `parametre.json`.
+
+---
+
+## Persistence Layer
+
+`shared/persistence.py` provides thread-safe storage for runtime settings in `parametre.json`.
+
+```python
+from shared.persistence import get_vad_bypass, set_vad_bypass
+
+# Read setting (cached)
+bypass_enabled = get_vad_bypass()
+
+# Update setting (writes to file)
+set_vad_bypass(True)
+```
+
+**Current settings**:
+```json
+{
+  "vad_bypass": false
+}
+```
+
+**Features**:
+- In-memory cache for fast reads
+- Thread-safe with locks
+- Automatic file creation with defaults
+
+**Adding new persistent settings**:
+1. Add field to `UserSettings` TypedDict in `persistence.py`
+2. Add default value in `DEFAULT_SETTINGS`
+3. Create getter/setter functions
+
 ---
 
 ## Module Reference
@@ -302,9 +371,21 @@ Silero VAD + Zero Crossing Rate for speech detection.
 
 ```python
 detector = VoiceDetector()
+detector.preload_model()            # Load Silero VAD upfront (avoids first-call delay)
 detector.start_calibration()        # Calibrate noise floor
-is_speech, prob = detector.is_voice(audio_chunk)
+is_speech = detector.is_human_speech(audio_chunk)   # -> bool
+metrics = detector.get_metrics()    # silero_probability, rms, zcr, thresholds...
 ```
+
+**Note**: `is_human_speech()` returns a plain `bool`. The Silero probability and
+the other decision inputs are read separately via `get_metrics()`.
+
+**Advanced features**:
+- **Sliding window voting**: Silero votes over 5-frame window, requires 3+ positive votes
+- **Adaptive detection**: EMA-based reference level tracking, auto-adjusts thresholds
+- **Auto-recalibration**: Triggers after 30+ seconds of continuous silence
+- **ZCR filtering**: Rejects non-speech sounds (music, noise) via zero-crossing rate
+- **Dynamic RMS threshold**: Calibrated from ambient noise floor
 
 ### api/server.py
 Flask SSE server.
@@ -316,7 +397,19 @@ broadcast_state(ctx, "active")      # Send state change
 ```
 
 ### shared/context.py
-AppContext dataclass with sub-contexts (ModelContext, SleepContext, AudioContext, SSEContext).
+AppContext dataclass with sub-contexts (ModelContext, SleepContext, AudioContext, UIContext).
+
+### shared/persistence.py
+Thread-safe persistence for `parametre.json`. See [Persistence Layer](#persistence-layer).
+
+### ui/ (standalone mode)
+The visualizer can run as a standalone subprocess:
+
+```bash
+python -m ui  # Launches visualizer independently
+```
+
+Used by `ui/manager.py` to spawn the visualizer in a separate process.
 
 ### shared/config.py
 Configuration bridge. Exports constants from `settings.py`:
