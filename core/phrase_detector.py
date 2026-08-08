@@ -240,10 +240,14 @@ class PhraseEndDetector:
         """
         Evaluate phrase end using acoustic indicators.
 
-        Decision logic:
-        - 3+ blocks silence = phrase end (definite)
-        - 2+ blocks silence + energy drop = phrase end
-        - 1+ block silence + energy drop + pitch drop = phrase end
+        Decision logic (seuils etages, definis dans shared/constants.py):
+        - SILENCE_BLOCKS_DEFINITE (5) blocs de silence seul = fin certaine
+        - SILENCE_BLOCKS_WITH_ENERGY (3) blocs + chute d'energie = fin
+        - SILENCE_BLOCKS_WITH_PITCH (2) blocs + chute d'energie ET pitch = fin
+
+        Plus les indices acoustiques sont nombreux, moins on exige de silence.
+        C'est ce qui permet de couper tot sur une phrase declarative terminee
+        sans couper au milieu d'une hesitation.
         """
         energy_drop = self._detect_energy_drop()
         pitch_drop = self._detect_pitch_drop()

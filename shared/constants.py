@@ -78,10 +78,13 @@ AMBIENT_FACTOR_MARGIN: Final[float] = 0.7      # Margin for ambient classificati
 PITCH_DROP_THRESHOLD: Final[float] = 0.15  # 15% drop = falling intonation
 
 # Silence block thresholds (with BLOCK_SECONDS = 0.5s)
-# 5 blocks = 2.5s of silence before flush
-SILENCE_BLOCKS_DEFINITE: Final[int] = 5    # Definite phrase end
-SILENCE_BLOCKS_WITH_ENERGY: Final[int] = 5  # With energy drop
-SILENCE_BLOCKS_WITH_PITCH: Final[int] = 5   # With energy + pitch drop
+# Les seuils sont ETAGES: plus on a de preuves acoustiques de fin de phrase,
+# moins on exige de silence. Sans etagement (3 seuils identiques) les branches
+# energie/pitch de _evaluate_phrase_end sont inatteignables et l'analyse
+# prosodique ne sert a rien.
+SILENCE_BLOCKS_DEFINITE: Final[int] = 5     # 2.5s de silence seul = fin certaine
+SILENCE_BLOCKS_WITH_ENERGY: Final[int] = 3  # 1.5s + chute d'energie
+SILENCE_BLOCKS_WITH_PITCH: Final[int] = 2   # 1.0s + chute d'energie ET de pitch
 
 
 # =============================================================================
