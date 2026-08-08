@@ -198,45 +198,50 @@ def unload_models(ctx: AppContext) -> None:
 # =============================================================================
 
 # Phrases typiques que Whisper génère quand il reçoit du bruit/silence
-HALLUCINATION_PATTERNS = [
-    # Sous-titres YouTube/TV
-    "sous-titrage",
-    "sous-titres",
-    "société radio-canada",
-    "radio-canada",
-    "sous-titres par",
-    "sous-titrage st",
+# NOTE: Ces patterns sont vérifiés comme phrases complètes OU comme sous-chaînes
+#       selon leur catégorie (voir _is_hallucination)
 
-    # Remerciements vidéo
-    "merci d'avoir regardé",
-    "merci d'avoir écouté",
-    "merci à mes tipeurs",
-    "merci à mes souscripteurs",
-    "n'hésitez pas à vous abonner",
-    "abonnez-vous",
-    "likez la vidéo",
-    "laissez un commentaire",
-    "à bientôt",
-    "à la prochaine",
-
-    # Musique/Son
+# Patterns qui doivent être le texte COMPLET (ou presque) pour être filtrés
+HALLUCINATION_EXACT_PATTERNS = [
+    # Musique/Son - seulement si c'est le seul contenu
     "musique",
     "♪",
     "applaudissements",
     "rires",
     "silence",
-
-    # Phrases génériques vides
     "...",
+    ".",
+    # Phrases courtes vides
     "je vous remercie",
-    "c'est tout pour aujourd'hui",
+    "merci",
     "bonne journée",
     "bonne soirée",
+    "à bientôt",
+    "à la prochaine",
+]
+
+# Patterns qui peuvent être des sous-chaînes (phrases plus longues/spécifiques)
+HALLUCINATION_SUBSTRING_PATTERNS = [
+    # Sous-titres YouTube/TV
+    "sous-titrage",
+    "sous-titres",
+    "société radio-canada",
+    "sous-titres par",
+    "sous-titrage st",
+
+    # Remerciements vidéo typiques
+    "merci d'avoir regardé",
+    "merci d'avoir écouté",
+    "merci à mes tipeurs",
+    "merci à mes souscripteurs",
+    "n'hésitez pas à vous abonner",
+    "likez la vidéo",
+    "laissez un commentaire",
+    "c'est tout pour aujourd'hui",
 
     # Anglais courant
     "thank you for watching",
     "thanks for watching",
-    "subscribe",
     "like and subscribe",
 ]
 
@@ -256,19 +261,29 @@ def _is_hallucination(text: str) -> bool:
 
     text_lower = text.lower().strip()
 
-    # Vérifie si le texte contient un pattern d'hallucination
-    for pattern in HALLUCINATION_PATTERNS:
+    # Patterns exacts : le texte doit être UNIQUEMENT ce pattern (ou très court)
+    # Permet de dire "j'aime la musique" sans être filtré
+    if len(text_lower) < 30:  # Seulement pour les textes courts
+        for pattern in HALLUCINATION_EXACT_PATTERNS:
+            if text_lower == pattern or text_lower == pattern + ".":
+                log_info(f"{LOG_PREFIX_FILTER} Hallucination exacte: '{text}'")
+                return True
+
+    # Patterns substring : peuvent être n'importe où dans le texte
+    # (phrases spécifiques de YouTube/vidéo)
+    for pattern in HALLUCINATION_SUBSTRING_PATTERNS:
         if pattern in text_lower:
             log_info(f"{LOG_PREFIX_FILTER} Hallucination détectée: '{pattern}' dans '{text[:50]}...'")
             return True
 
     # Texte répétitif (même mot/phrase répété)
     words = text_lower.split()
-    if len(words) >= 4:
-        # Si plus de 60% des mots sont identiques, c'est suspect
+    if len(words) >= 6:  # Augmenté de 4 à 6 pour éviter faux positifs
         unique_words = set(words)
-        if len(unique_words) / len(words) < 0.4:
-            log_info(f"{LOG_PREFIX_FILTER} Texte répétitif détecté: '{text[:50]}...'")
+        ratio = len(unique_words) / len(words)
+        # Seuil abaissé de 0.4 à 0.25 (plus permissif)
+        if ratio < 0.25:
+            log_warn(f"{LOG_PREFIX_FILTER} Texte répétitif rejeté ({ratio:.0%} unique): '{text[:80]}...'")
             return True
 
     return False
