@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sys
 import time
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from queue import Empty
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -323,8 +324,14 @@ def _transcribe_and_paste(
     # Publish transcription started event
     EventBus.publish(Events.TRANSCRIPTION_STARTED)
 
-    # Run transcription
-    final_text = transcribe_production(ctx, audio)
+    # Run transcription with timeout protection (60s max)
+    PRODUCTION_TIMEOUT = 60.0
+    try:
+        future = ctx.executor.submit(transcribe_production, ctx, audio)
+        final_text = future.result(timeout=PRODUCTION_TIMEOUT)
+    except FuturesTimeoutError:
+        log_error(f"{log_prefix} Transcription timeout après {PRODUCTION_TIMEOUT}s")
+        final_text = None
 
     # Signal done
     if broadcaster:
@@ -356,11 +363,8 @@ def _handle_voice_activity(ctx, audio_block, buffer, phrase_detector,
     buffer.add_voice_audio(audio_block)
     update_speech_timer(ctx)
 
-    # Check for buffer overflow (only if bypass is OFF)
-    with ctx.vad_bypass_lock:
-        bypass_on = ctx.vad_bypass
-
-    if not bypass_on and buffer.is_production_overflow:
+    # Check for buffer overflow (always, even in bypass mode)
+    if buffer.is_production_overflow:
         _flush_production_overflow(ctx, buffer, phrase_detector, broadcaster)
         return
 
