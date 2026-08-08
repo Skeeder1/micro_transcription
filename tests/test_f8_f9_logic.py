@@ -61,8 +61,9 @@ class TestAudioContext:
         audio_ctx = AudioContext()
         assert audio_ctx.is_recording is True
         assert audio_ctx.force_flush is False
-        assert audio_ctx.is_processing is False
-        assert audio_ctx.vad_detecting is False
+        assert audio_ctx.vad_bypass is False
+        assert audio_ctx.last_pasted == ""
+        assert audio_ctx.audio_queue.empty()
 
 
 class TestToggleRecording:
@@ -100,18 +101,35 @@ class TestToggleRecording:
     @patch('api.server.broadcast_recording')
     @patch('api.server.broadcast_preview')
     def test_toggle_recording_deactivates_mic_and_sets_force_flush(self, mock_preview, mock_recording):
-        """F8 should toggle mic OFF and set force_flush when mic is ON."""
+        """F8 OFF leve force_flush pour le processor, puis le redescend.
+
+        force_flush est un signal transitoire: toggle_recording le leve, attend
+        que le processor l'acquitte (max 1 s), puis le remet a False par
+        securite. Tester sa valeur apres retour ne prouve rien -- on observe
+        donc le handshake pendant l'attente.
+        """
         from shared.sleep import toggle_recording
 
         ctx = AppContext()
         ctx.is_sleeping = False
         ctx.audio.set_recording(True)
 
-        result = toggle_recording(ctx)
+        observed = []
+
+        def fake_processor_ack(_delay):
+            """Joue le role du processor: constate le signal puis l'acquitte."""
+            observed.append(ctx.force_flush)
+            ctx.force_flush = False
+
+        with patch('shared.sleep.time.sleep', side_effect=fake_processor_ack):
+            result = toggle_recording(ctx)
 
         assert result is False
         assert ctx.is_recording is False
-        assert ctx.force_flush is True
+        # Le signal a bien ete leve et vu par le processor...
+        assert observed == [True], f"handshake force_flush inattendu: {observed}"
+        # ...et il est redescendu pour ne pas re-declencher un flush parasite.
+        assert ctx.force_flush is False
 
 
 class TestToggleSystem:

@@ -46,21 +46,19 @@ class TestSleepMechanism:
 
     def test_sleep_state_toggle(self, app_context):
         """Test sleep state can be toggled."""
-        from shared.sleep import enter_sleep_mode, exit_sleep_mode, is_sleeping
+        from shared.sleep import is_sleeping
 
         assert is_sleeping(app_context) is False
 
-        enter_sleep_mode(app_context, manual=True)
+        app_context.sleep.enter_sleep(manual=True)
         assert is_sleeping(app_context) is True
 
-        exit_sleep_mode(app_context)
+        app_context.sleep.exit_sleep()
         assert is_sleeping(app_context) is False
 
     def test_manual_sleep_flag(self, app_context):
         """Test manual sleep flag is set correctly."""
-        from shared.sleep import enter_sleep_mode
-
-        enter_sleep_mode(app_context, manual=True)
+        app_context.sleep.enter_sleep(manual=True)
 
         assert app_context.manual_sleep is True
 
@@ -76,9 +74,7 @@ class TestSleepMechanism:
 
     def test_deep_sleep_state(self, app_context):
         """Test deep sleep state."""
-        from shared.sleep import enter_sleep_mode
-
-        enter_sleep_mode(app_context, manual=True)
+        app_context.sleep.enter_sleep(manual=True)
 
         # Initially not in deep sleep
         assert app_context.is_deep_sleeping is False
