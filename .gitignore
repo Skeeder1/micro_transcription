@@ -42,14 +42,47 @@ core/.cache/
 *.bak
 nul
 
+# Caches d'outils
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Test and diagnostic files (generated, not committed)
 scripts/*test*.bat
 scripts/*test*.py
 scripts/*diagnostic*.bat
 DIAGNOSTIC.md
 
-# Services configuration (contains API keys)
+# =============================================================================
+# Secrets - NE JAMAIS COMMITER
+# =============================================================================
+# Git compare le nom de fichier ENTIER: une regle `.env` seule n'attrape ni
+# `secrets.env` ni `prod.env`. D'ou les motifs generiques ci-dessous.
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+
+*.key
+*.pem
+*.p12
+*.pfx
+secrets*
+credentials*
+*_credentials.json
+*service-account*.json
+
+# Configuration des services (contient des cles API)
 services/config.py
+
+# =============================================================================
+# Etat applicatif (regenere au demarrage, ne doit pas etre versionne)
+# =============================================================================
+# shared/persistence.py recree ce fichier avec ses valeurs par defaut s'il est
+# absent. Le versionner faisait apparaitre le depot comme modifie des que
+# l'utilisateur basculait le bypass VAD depuis l'interface.
+parametre.json
 
 # Legacy code (removed in v2.0)
 transcription_app/
