@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
-Test simple pour vérifier si la fenêtre du visualiseur s'affiche.
+Diagnostic MANUEL de l'affichage du visualiseur Qt.
 
-Exécuter: .venv/bin/python tests/test_visualizer_window.py
+Ce script ouvre de vraies fenêtres et attend une saisie clavier: il ne peut donc
+pas tourner dans une suite automatisée. Il vivait auparavant dans tests/, où
+pytest le collectait et restait bloqué sur `input()`. Il reste utile pour
+diagnostiquer un problème d'affichage (OpenGL, Wayland, subprocess).
+
+Exécuter: .venv/bin/python scripts/diagnostic_visualizer.py [basic|visualizer|subprocess]
 """
 
 import sys
@@ -111,10 +116,10 @@ if __name__ == "__main__":
             print("Tests disponibles: basic, visualizer, subprocess")
             sys.exit(1)
     else:
-        print("\nUsage: python tests/test_visualizer_window.py [test_name]")
+        print("\nUsage: python scripts/diagnostic_visualizer.py [test_name]")
         print("Tests disponibles:")
         print("  basic      - Test une fenêtre Qt basique")
         print("  visualizer - Test le visualiseur directement")
         print("  subprocess - Test le visualiseur en subprocess")
         print()
-        print("Exemple: .venv/bin/python tests/test_visualizer_window.py basic")
+        print("Exemple: .venv/bin/python scripts/diagnostic_visualizer.py basic")
