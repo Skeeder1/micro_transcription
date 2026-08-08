@@ -244,8 +244,8 @@ def _paste_windows_pynput(text: str) -> bool:
         return False
 
 
-@handle_errors(log_prefix=LOG_PREFIX_PASTE, reraise=False)
-def paste_via_clipboard(ctx: AppContext, text: str) -> None:
+@handle_errors(log_prefix=LOG_PREFIX_PASTE, reraise=False, default_return=False)
+def paste_via_clipboard(ctx: AppContext, text: str) -> bool:
     """
     Paste text into the active window using platform-specific method.
 
@@ -259,17 +259,29 @@ def paste_via_clipboard(ctx: AppContext, text: str) -> None:
     Args:
         ctx: Application context
         text: Text to paste
+
+    Returns:
+        True if paste was successful, False otherwise
     """
-    if not text or text == ctx.last_pasted:
-        return
+    if not text:
+        log_info(f"{LOG_PREFIX_PASTE} Texte vide, skip")
+        return False
+
+    if text == ctx.last_pasted:
+        log_info(f"{LOG_PREFIX_PASTE} Texte identique au précédent, skip")
+        return False
 
     # Use timeout lock to prevent concurrent paste operations
     with _paste_lock:
-        _paste_text_impl(ctx, text)
+        return _paste_text_impl(ctx, text)
 
 
-def _paste_text_impl(ctx: AppContext, text: str) -> None:
-    """Internal implementation of paste operation (runs under lock)."""
+def _paste_text_impl(ctx: AppContext, text: str) -> bool:
+    """Internal implementation of paste operation (runs under lock).
+
+    Returns:
+        True if paste was successful, False otherwise
+    """
     payload = text + (" " if config.APPEND_SPACE and not text.endswith(" ") else "")
     old_clip: Optional[str] = None
 
@@ -337,3 +349,5 @@ def _paste_text_impl(ctx: AppContext, text: str) -> None:
         ctx.last_pasted = text
     else:
         log_warn(f"{LOG_PREFIX_PASTE} Échec du collage du texte")
+
+    return success
