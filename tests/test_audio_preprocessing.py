@@ -206,3 +206,90 @@ class TestPreprocessingPipeline:
             # They may differ due to noise reduction
             pass
         # Otherwise they should be the same
+
+
+def _reference_highpass(audio, sample_rate=16000, cutoff_hz=80.0):
+    """Recurrence IIR d'origine, en Python pur: reference de non-regression.
+
+    Volontairement naive et lente. C'est le comportement exact que la version
+    vectorisee (scipy.signal.lfilter) doit reproduire.
+    """
+    import math
+
+    if audio.size == 0:
+        return audio
+
+    rc = 1.0 / (2.0 * math.pi * cutoff_hz)
+    dt = 1.0 / sample_rate
+    alpha = rc / (rc + dt)
+
+    filtered = np.zeros_like(audio)
+    filtered[0] = audio[0]
+    for i in range(1, len(audio)):
+        filtered[i] = alpha * (filtered[i - 1] + audio[i] - audio[i - 1])
+    return filtered.astype(audio.dtype)
+
+
+class TestHighpassFilterEquivalence:
+    """Le filtre vectorise doit rester numeriquement identique a la boucle.
+
+    Le passe-haut tournait en Python pur sur chaque echantillon, soit ~0,45 s
+    par buffer de 30 s a 16 kHz, sur le chemin de production. La version
+    scipy.signal.lfilter est ~40x plus rapide; ces tests verifient qu'elle ne
+    change pas le signal produit.
+    """
+
+    @pytest.mark.parametrize("n_samples", [1, 2, 10, 1000, 16000])
+    def test_matches_reference_implementation(self, n_samples, sample_rate):
+        from core.audio_preprocessing import apply_highpass_filter
+
+        rng = np.random.default_rng(1234)
+        audio = (rng.standard_normal(n_samples) * 0.2).astype(np.float32)
+
+        got = apply_highpass_filter(audio, sample_rate, cutoff_hz=80.0)
+        expected = _reference_highpass(audio, sample_rate, cutoff_hz=80.0)
+
+        assert got.shape == expected.shape
+        assert got.dtype == expected.dtype
+        np.testing.assert_allclose(got, expected, atol=1e-5)
+
+    def test_first_sample_is_preserved(self, sample_rate):
+        """La condition initiale y[0] = x[0] doit etre conservee."""
+        from core.audio_preprocessing import apply_highpass_filter
+
+        audio = np.array([0.7, -0.2, 0.1, 0.0], dtype=np.float32)
+        result = apply_highpass_filter(audio, sample_rate, cutoff_hz=80.0)
+
+        assert result[0] == pytest.approx(audio[0], abs=1e-6)
+
+    def test_removes_dc_offset(self, sample_rate):
+        """Un passe-haut doit supprimer une composante continue."""
+        from core.audio_preprocessing import apply_highpass_filter
+
+        audio = np.full(sample_rate, 0.5, dtype=np.float32)
+        result = apply_highpass_filter(audio, sample_rate, cutoff_hz=80.0)
+
+        # Apres le regime transitoire, le continu est elimine.
+        assert abs(float(result[-1])) < 0.01
+
+    def test_preserves_speech_band_energy(self, sample_rate):
+        """Un signal a 200 Hz (bande vocale) doit survivre au filtre 80 Hz."""
+        from core.audio_preprocessing import apply_highpass_filter
+
+        t = np.linspace(0, 1.0, sample_rate, endpoint=False)
+        audio = np.sin(2 * np.pi * 200 * t).astype(np.float32)
+
+        result = apply_highpass_filter(audio, sample_rate, cutoff_hz=80.0)
+
+        rms_in = float(np.sqrt(np.mean(audio ** 2)))
+        rms_out = float(np.sqrt(np.mean(result ** 2)))
+        assert rms_out > 0.8 * rms_in
+
+    def test_empty_and_single_sample_are_safe(self, sample_rate):
+        from core.audio_preprocessing import apply_highpass_filter
+
+        assert apply_highpass_filter(np.array([], dtype=np.float32)).size == 0
+
+        single = apply_highpass_filter(np.array([0.5], dtype=np.float32))
+        assert single.shape == (1,)
+        assert single[0] == pytest.approx(0.5, abs=1e-6)

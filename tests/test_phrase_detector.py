@@ -155,3 +155,69 @@ class TestPitchDetection:
         # Check if pitch drop detected
         drop = phrase_detector._detect_pitch_drop()
         # May or may not detect depending on implementation
+
+
+class TestTieredThresholds:
+    """Les seuils de silence doivent rester ETAGES.
+
+    Regression: les trois seuils avaient ete aplatis a 5 lors d'un refactor.
+    Consequence: la premiere condition de _evaluate_phrase_end (silence seul)
+    absorbait les deux autres, rendant les branches energie et pitch
+    inatteignables -- toute l'analyse prosodique du module ne servait plus a
+    rien et il fallait systematiquement 2,5 s de silence pour couper.
+    """
+
+    def test_thresholds_are_strictly_tiered(self):
+        """Sans etagement, les branches energie/pitch sont du code mort."""
+        from shared.constants import (
+            SILENCE_BLOCKS_DEFINITE,
+            SILENCE_BLOCKS_WITH_ENERGY,
+            SILENCE_BLOCKS_WITH_PITCH,
+        )
+
+        assert SILENCE_BLOCKS_WITH_PITCH < SILENCE_BLOCKS_WITH_ENERGY < SILENCE_BLOCKS_DEFINITE
+        assert SILENCE_BLOCKS_WITH_PITCH >= 1
+
+    def test_energy_branch_is_reachable(self, phrase_detector, loud_noise_audio, silence_audio):
+        """Une chute d'energie doit couper AVANT le seuil de silence seul."""
+        from shared.constants import SILENCE_BLOCKS_DEFINITE, SILENCE_BLOCKS_WITH_ENERGY
+
+        for _ in range(3):
+            phrase_detector.update(loud_noise_audio, is_silent=False)
+        for _ in range(SILENCE_BLOCKS_WITH_ENERGY):
+            phrase_detector.update(silence_audio, is_silent=True)
+
+        # On est sous le seuil "silence seul": seule la branche energie peut
+        # declencher ici.
+        assert phrase_detector._silence_count < SILENCE_BLOCKS_DEFINITE
+        assert phrase_detector._detect_energy_drop() is True
+        assert phrase_detector.is_phrase_end(is_silent=True) is True
+
+    def test_silence_alone_still_cuts_at_definite_threshold(self, phrase_detector,
+                                                           speech_like_audio, silence_audio):
+        """Filet de securite: assez de silence suffit, sans indice prosodique."""
+        from shared.constants import SILENCE_BLOCKS_DEFINITE
+
+        phrase_detector.update(speech_like_audio, is_silent=False)
+        for _ in range(SILENCE_BLOCKS_DEFINITE):
+            phrase_detector.update(silence_audio, is_silent=True)
+
+        assert phrase_detector.is_phrase_end(is_silent=True) is True
+
+    def test_no_cut_below_lowest_threshold(self, phrase_detector, loud_noise_audio, silence_audio):
+        """Un silence trop court ne coupe pas, meme avec chute d'energie."""
+        from shared.constants import SILENCE_BLOCKS_WITH_PITCH
+
+        for _ in range(3):
+            phrase_detector.update(loud_noise_audio, is_silent=False)
+        for _ in range(SILENCE_BLOCKS_WITH_PITCH - 1):
+            phrase_detector.update(silence_audio, is_silent=True)
+
+        assert phrase_detector.is_phrase_end(is_silent=True) is False
+
+    def test_speech_required_before_any_cut(self, phrase_detector, silence_audio):
+        """Sans parole prealable, aucun silence ne declenche de fin de phrase."""
+        for _ in range(20):
+            phrase_detector.update(silence_audio, is_silent=True)
+
+        assert phrase_detector.is_phrase_end(is_silent=True) is False
