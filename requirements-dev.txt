@@ -1,0 +1,6 @@
+# Dependances de developpement (tests, outillage).
+# Installation:  pip install -r requirements.txt -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest==9.0.1
