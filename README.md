@@ -1,132 +1,126 @@
-# Dictée vocale locale — micro_transcription
+# Local voice dictation — micro_transcription
 
-**Vous parlez, le texte s'écrit là où se trouve votre curseur.** Dans n'importe
-quelle application, sans passer par le cloud : la reconnaissance vocale tourne
-entièrement sur votre machine.
+**You speak, the text appears wherever your cursor is.** In any application, without
+going through the cloud: speech recognition runs entirely on your machine.
 
-![Le visualiseur pendant une dictée](docs/images/01-dictee-en-cours.png)
-
----
-
-## Le problème
-
-Dicter du texte suppose en général d'envoyer sa voix chez un tiers, d'ouvrir une
-fenêtre dédiée, puis de copier-coller le résultat. Trois frictions : la
-confidentialité, le changement de contexte, le copier-coller.
-
-Ce projet supprime les trois. Un raccourci clavier active le micro ; dès que vous
-faites une pause, la phrase est transcrite et **collée directement dans la
-fenêtre active** — éditeur de code, navigateur, messagerie. Aucun audio ne quitte
-la machine.
-
-Le cœur du problème n'est pas la transcription elle-même (Whisper s'en charge),
-mais **savoir quand vous avez fini de parler**. Couper trop tôt tronque la
-phrase ; couper trop tard fait attendre. C'est là que se concentre la logique du
-projet.
+![The visualizer during dictation](docs/images/01-dictee-en-cours.png)
 
 ---
 
-## Fonctionnement
+## The problem
+
+Dictating text usually means sending your voice to a third party, opening a dedicated
+window, then copy-pasting the result. Three points of friction: privacy, context
+switching, copy-paste.
+
+This project removes all three. A keyboard shortcut turns on the microphone; as soon
+as you pause, the sentence is transcribed and **pasted directly into the active
+window** — code editor, browser, chat app. No audio leaves the machine.
+
+The hard part isn't the transcription itself (Whisper handles that), it's **knowing
+when you've finished speaking**. Cut too early and you truncate the sentence; cut too
+late and the user waits. That's where the logic of this project is concentrated.
+
+---
+
+## How it works
 
 ```
-Micro ──► Détection de voix ──► Détection de fin de phrase ──► Whisper ──► Presse-papiers
-          (Silero VAD + ZCR)     (énergie + pitch)                          └─► collage auto
+Mic ──► Voice detection ──► End-of-phrase detection ──► Whisper ──► Clipboard
+        (Silero VAD + ZCR)   (energy + pitch)                        └─► auto-paste
 ```
 
-**1. Détection d'activité vocale.** Chaque bloc de 0,5 s passe par Silero VAD
-(réseau de neurones, en local), complété par un filtre sur le taux de passage par
-zéro qui écarte musique et bruits non vocaux. Un mode adaptatif apprend le bruit
-ambiant sur les premières secondes et ajuste ses seuils en continu — la voix doit
-ressortir d'un facteur donné au-dessus du fond sonore.
+**1. Voice activity detection.** Every 0.5 s block runs through Silero VAD (a neural
+network, locally), complemented by a zero-crossing-rate filter that rejects music and
+non-vocal noise. An adaptive mode learns the ambient noise floor over the first few
+seconds and adjusts its thresholds continuously — speech has to stand out by a given
+factor above the background.
 
-**2. Détection de fin de phrase.** Plutôt que d'attendre un délai fixe, le module
-combine trois indices : durée du silence, chute d'énergie, et contour de pitch
-descendant (une phrase déclarative finit sur une intonation qui tombe). Les
-seuils sont **étagés** : plus les indices acoustiques s'accumulent, moins on
-exige de silence.
+**2. End-of-phrase detection.** Rather than waiting a fixed delay, the module combines
+three cues: silence duration, energy drop, and falling pitch contour (a declarative
+sentence ends on a falling intonation). The thresholds are **staged**: the more
+acoustic evidence accumulates, the less silence is required.
 
-| Indices disponibles | Silence requis |
+| Cues available | Silence required |
 | --- | --- |
-| Silence seul | 5 blocs (2,5 s) |
-| Silence + chute d'énergie | 3 blocs (1,5 s) |
-| Silence + énergie + pitch | 2 blocs (1,0 s) |
+| Silence only | 5 blocks (2.5 s) |
+| Silence + energy drop | 3 blocks (1.5 s) |
+| Silence + energy + pitch | 2 blocks (1.0 s) |
 
-**3. Transcription.** faster-whisper (CTranslate2) sur GPU si disponible, repli
-automatique sur CPU. Un filtre anti-hallucinations écarte les artefacts typiques
-que Whisper produit sur du silence (« Sous-titrage ST' », « Merci d'avoir
-regardé »).
+**3. Transcription.** faster-whisper (CTranslate2) on GPU when available, automatic
+fallback to CPU. An anti-hallucination filter discards the artefacts Whisper
+characteristically produces on silence ("Subtitled by...", "Thanks for watching").
 
-**4. Collage.** Le texte est injecté dans la fenêtre active (xdotool sous X11), et
-le contenu antérieur du presse-papiers est restauré.
+**4. Pasting.** The text is injected into the active window (xdotool under X11), and
+the previous clipboard contents are restored.
 
 ---
 
-## Stack technique
+## Tech stack
 
-| Domaine | Choix | Pourquoi |
+| Area | Choice | Why |
 | --- | --- | --- |
-| Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) | 4x plus rapide que l'implémentation de référence, à qualité égale |
-| Détection de voix | [Silero VAD](https://github.com/snakers4/silero-vad) | modèle JIT de 2,2 Mo, chargé en local, sans appel réseau |
-| Interface | PySide6 / Qt WebEngine | visualiseur en sous-processus isolé, l'UI ne peut pas figer la boucle audio |
-| Communication | Flask + Server-Sent Events | flux unidirectionnel cœur → UI, plus simple qu'un WebSocket ici |
-| Configuration | pydantic-settings | valeurs typées et validées aux bornes dès le démarrage |
-| Capture audio | sounddevice (PortAudio) | callback temps réel, faible latence |
-| Raccourcis | pynput | capture globale, hors focus |
+| Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) | 4x faster than the reference implementation at equal quality |
+| Voice detection | [Silero VAD](https://github.com/snakers4/silero-vad) | 2.2 MB JIT model, loaded locally, no network call |
+| Interface | PySide6 / Qt WebEngine | visualizer in an isolated subprocess — the UI cannot freeze the audio loop |
+| Communication | Flask + Server-Sent Events | one-way core → UI stream, simpler than a WebSocket here |
+| Configuration | pydantic-settings | typed values, validated at the boundaries on startup |
+| Audio capture | sounddevice (PortAudio) | real-time callback, low latency |
+| Hotkeys | pynput | global capture, works out of focus |
 
 ---
 
 ## Architecture
 
 ```
-main.py                    Point d'entrée → core.engine.run()
+main.py                    Entry point → core.engine.run()
 │
-├── core/                  Traitement audio et transcription
-│   ├── engine.py          Amorçage, orchestration de la boucle principale
-│   ├── processor.py       Pipeline audio (aperçu + production)
-│   ├── models.py          Chargement Whisper, inférence, filtre anti-hallucinations
-│   ├── voice_detector.py  Silero VAD + ZCR + détection adaptative
-│   ├── phrase_detector.py Fin de phrase (énergie + pitch)
+├── core/                  Audio processing and transcription
+│   ├── engine.py          Bootstrap, main loop orchestration
+│   ├── processor.py       Audio pipeline (preview + production)
+│   ├── models.py          Whisper loading, inference, anti-hallucination filter
+│   ├── voice_detector.py  Silero VAD + ZCR + adaptive detection
+│   ├── phrase_detector.py End-of-phrase detection (energy + pitch)
 │   ├── pipeline.py        AudioBuffer, PreviewManager, ProductionManager
-│   └── audio_capture.py   Entrée micro, collage presse-papiers
+│   └── audio_capture.py   Microphone input, clipboard paste
 │
-├── api/                   Communication inter-modules
-│   └── server.py          Flask + diffusion SSE
+├── api/                   Inter-module communication
+│   └── server.py          Flask + SSE broadcasting
 │
-├── ui/                    Visualiseur Qt6 (sous-processus)
-│   ├── manager.py         Cycle de vie du sous-processus
-│   └── visualizer_app.py  Application PySide6 WebEngine
+├── ui/                    Qt6 visualizer (subprocess)
+│   ├── manager.py         Subprocess lifecycle
+│   └── visualizer_app.py  PySide6 WebEngine application
 │
-└── shared/                Utilitaires transverses
-    ├── context.py         AppContext (état global, sous-contextes verrouillés)
-    ├── settings.py        Configuration Pydantic (source de vérité)
-    └── persistence.py     Réglages persistants (parametre.json)
+└── shared/                Cross-cutting utilities
+    ├── context.py         AppContext (global state, lock-guarded sub-contexts)
+    ├── settings.py        Pydantic configuration (source of truth)
+    └── persistence.py     Persisted settings (parametre.json)
 ```
 
-Deux partis pris structurants :
+Two structural decisions:
 
-- **Le visualiseur tourne dans un sous-processus séparé.** Qt WebEngine est
-  lourd et peut se bloquer ; l'isoler garantit que la boucle de capture audio,
-  elle, ne rate jamais un bloc.
-- **L'état partagé est regroupé dans `AppContext`**, découpé en sous-contextes
-  (`models`, `sleep`, `audio`, `ui`) qui portent chacun leur verrou. Aucun champ
-  mutable n'est lu ou écrit hors de son verrou.
+- **The visualizer runs in a separate subprocess.** Qt WebEngine is heavy and can
+  block; isolating it guarantees the audio capture loop never misses a block.
+- **Shared state lives in `AppContext`**, split into sub-contexts (`models`, `sleep`,
+  `audio`, `ui`) that each carry their own lock. No mutable field is read or written
+  outside its lock.
 
 ---
 
 ## Installation
 
-Testé sur Ubuntu 24.04, Python 3.12.
+Tested on Ubuntu 24.04, Python 3.12.
 
-**1. Dépendances système**
+**1. System dependencies**
 
 ```bash
 sudo apt install -y xdotool xclip xsel portaudio19-dev \
                     libxcb-xinerama0 libxcb-cursor0 python3-venv
 ```
 
-`xdotool` sert au collage sous X11, `portaudio19-dev` à la capture micro.
+`xdotool` handles pasting under X11, `portaudio19-dev` handles microphone capture.
 
-**2. Environnement Python**
+**2. Python environment**
 
 ```bash
 git clone https://github.com/Skeeder1/micro_transcription.git
@@ -137,38 +131,35 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Le modèle Whisper est téléchargé au premier lancement (~460 Mo pour `small`,
-~3 Go pour `large`). Silero VAD (2,2 Mo) est récupéré une seule fois puis mis en
-cache dans `.cache/`.
+The Whisper model is downloaded on first launch (~460 MB for `small`, ~3 GB for
+`large`). Silero VAD (2.2 MB) is fetched once and cached in `.cache/`.
 
-**GPU** — Le paquet `torch` de PyPI embarque déjà CUDA sur Linux x86_64. Sans
-carte NVIDIA, l'application bascule seule sur CPU (utilisez alors un modèle
-`small` ou `base`).
+**GPU** — the PyPI `torch` package already bundles CUDA on Linux x86_64. Without an
+NVIDIA card the application falls back to CPU on its own (use a `small` or `base`
+model in that case).
 
 ---
 
 ## Configuration
 
-Tous les réglages ont une valeur par défaut fonctionnelle : **le fichier `.env`
-est optionnel**.
+Every setting has a working default: **the `.env` file is optional.**
 
 ```bash
 cp .env.example .env
 ```
 
-Le nommage suit `TRANSCRIBE_<GROUPE>__<CHAMP>` (double underscore) :
+Naming follows `TRANSCRIBE_<GROUP>__<FIELD>` (double underscore):
 
 ```bash
 TRANSCRIBE_MODEL__WHISPER_MODEL=small   # tiny|base|small|medium|large
 TRANSCRIBE_MODEL__LANGUAGE=fr
 TRANSCRIBE_MODEL__DEVICE=cuda           # cuda|cpu|auto
-TRANSCRIBE_VAD__SILERO_THRESHOLD=0.1    # plus bas = plus sensible
+TRANSCRIBE_VAD__SILERO_THRESHOLD=0.1    # lower = more sensitive
 TRANSCRIBE_SLEEP__AUTO_SLEEP_SECONDS=30
 ```
 
-Les valeurs sont validées aux bornes au démarrage : une saisie invalide échoue
-immédiatement avec un message explicite, plutôt que de dégrader silencieusement
-le comportement.
+Values are range-validated on startup: an invalid entry fails immediately with an
+explicit message, rather than silently degrading behaviour.
 
 ```
 pydantic_core._pydantic_core.ValidationError: 1 validation error for Settings
@@ -176,55 +167,55 @@ audio.sample_rate
   Input should be greater than or equal to 8000 [input_value='999']
 ```
 
-**Aucune clé API n'est requise** : Whisper et Silero tournent en local.
+**No API key is required**: Whisper and Silero run locally.
 
 ---
 
-## Lancement
+## Running
 
 ```bash
 source .venv/bin/activate
 python main.py
 ```
 
-Sortie réelle au démarrage :
+Actual startup output:
 
 ```
-[INFO] 🎤 SYSTÈME DE DICTÉE VOCALE AVANCÉ v2.0
-[INFO] 🎯 Initialisation détecteur vocal avancé (mode adaptatif)...
-[INFO] [VAD] Silero VAD chargé (local) (threshold=0.1)
-[INFO]    → Calibration automatique du bruit ambiant (2 premières secondes)
-[INFO] 🌐 Démarrage serveur API SSE...
-[INFO] ✅ Serveur API prêt!
-[INFO] 🚀 Lancement interface graphique...
-[INFO] [Visualizer] Lancé (PID: 56698)
-[INFO] ⌨️  Hotkeys: F8 = Enregistrement ON/OFF | F9 = Veille ON/OFF
-[INFO] 🎮 Device: CUDA (GPU NVIDIA détecté)
-[INFO]    Modèle 'small' chargé avec succès
-[INFO] 🔊 Système prêt - Parlez maintenant!
-[INFO] ✅ Capture audio démarrée
+[INFO] 🎤 ADVANCED VOICE DICTATION SYSTEM v2.0
+[INFO] 🎯 Initialising advanced voice detector (adaptive mode)...
+[INFO] [VAD] Silero VAD loaded (local) (threshold=0.1)
+[INFO]    → Automatic ambient noise calibration (first 2 seconds)
+[INFO] 🌐 Starting SSE API server...
+[INFO] ✅ API server ready!
+[INFO] 🚀 Launching graphical interface...
+[INFO] [Visualizer] Started (PID: 56698)
+[INFO] ⌨️  Hotkeys: F8 = Recording ON/OFF | F9 = Sleep ON/OFF
+[INFO] 🎮 Device: CUDA (NVIDIA GPU detected)
+[INFO]    Model 'small' loaded successfully
+[INFO] 🔊 System ready — speak now!
+[INFO] ✅ Audio capture started
 ```
 
-> Le texte transcrit est collé dans la **fenêtre active**. Placez votre curseur
-> là où vous voulez écrire avant de parler.
+> Transcribed text is pasted into the **active window**. Put your cursor where you
+> want to write before you start speaking.
 
-### Raccourcis
+### Shortcuts
 
-| Touche | Effet |
+| Key | Effect |
 | --- | --- |
-| **F9** | Système actif / en veille (ferme le visualiseur, libère le micro) |
-| **F8** | Micro actif / en pause (transcrit immédiatement ce qui est en tampon) |
+| **F9** | System active / asleep (closes the visualizer, releases the mic) |
+| **F8** | Mic active / paused (immediately transcribes whatever is buffered) |
 
-Deux niveaux de veille : après 30 s sans parole le système se met en veille ;
-après 30 min il décharge les modèles de la mémoire. F9 relance.
+Two sleep levels: after 30 s without speech the system goes to sleep; after 30 min it
+unloads the models from memory. F9 wakes it back up.
 
 ---
 
-## Essayer sans microphone
+## Trying it without a microphone
 
-Pour vérifier une installation ou mesurer les performances sans dépendre d'un
-micro, un script pousse un fichier audio dans le pipeline réel. Avec
-`--generate`, la phrase est synthétisée par ffmpeg — aucun fichier requis :
+To verify an installation or measure performance without depending on a mic, a script
+pushes an audio file through the real pipeline. With `--generate`, the sentence is
+synthesised by ffmpeg — no file needed:
 
 ```bash
 python scripts/demo_pipeline.py --generate
@@ -232,74 +223,73 @@ python scripts/demo_pipeline.py --generate
 
 ```
 ======================================================================
-DEMONSTRATION DU PIPELINE DE TRANSCRIPTION (sans micro)
+TRANSCRIPTION PIPELINE DEMO (no microphone)
 ======================================================================
-Fichier   : demo.wav
-Duree     : 4.63 s (74080 echantillons a 16000 Hz)
-Modele    : small  |  langue: en
+File      : demo.wav
+Duration  : 4.63 s (74080 samples at 16000 Hz)
+Model     : small  |  language: en
 Device    : cuda / float16
 
-[1] DETECTION D'ACTIVITE VOCALE  (Silero VAD + taux de passage par zero)
-    bloc  1 @  0.00s : VOIX     silero=0.997  rms=0.1111
-    bloc  2 @  0.50s : VOIX     silero=1.000  rms=0.1683
-    bloc  3 @  1.00s : VOIX     silero=1.000  rms=0.2065
-    bloc  4 @  1.50s : VOIX     silero=1.000  rms=0.2109
-    bloc  5 @  2.00s : VOIX     silero=1.000  rms=0.0987
-    bloc  6 @  2.50s : VOIX     silero=1.000  rms=0.1762
-    bloc  7 @  3.00s : VOIX     silero=1.000  rms=0.1376
-    bloc  8 @  3.50s : VOIX     silero=1.000  rms=0.1739
-    bloc  9 @  4.00s : silence  silero=1.000  rms=0.1312
-    -> 8/9 blocs classes comme parole
+[1] VOICE ACTIVITY DETECTION  (Silero VAD + zero-crossing rate)
+    block  1 @  0.00s : VOICE    silero=0.997  rms=0.1111
+    block  2 @  0.50s : VOICE    silero=1.000  rms=0.1683
+    block  3 @  1.00s : VOICE    silero=1.000  rms=0.2065
+    block  4 @  1.50s : VOICE    silero=1.000  rms=0.2109
+    block  5 @  2.00s : VOICE    silero=1.000  rms=0.0987
+    block  6 @  2.50s : VOICE    silero=1.000  rms=0.1762
+    block  7 @  3.00s : VOICE    silero=1.000  rms=0.1376
+    block  8 @  3.50s : VOICE    silero=1.000  rms=0.1739
+    block  9 @  4.00s : silence  silero=1.000  rms=0.1312
+    -> 8/9 blocks classified as speech
 
-[2] PREPROCESSING  (passe-haut 80 Hz -> amplification -> normalisation)
-    RMS avant : 0.1593
-    RMS apres : 0.2153
-    Duree     : 1.1 ms
+[2] PREPROCESSING  (80 Hz high-pass -> amplification -> normalisation)
+    RMS before : 0.1593
+    RMS after  : 0.2153
+    Duration   : 1.1 ms
 
-[3] TRANSCRIPTION WHISPER
-    Chargement du modele : 0.90 s
-    Transcription        : 0.39 s  (x11.9 par rapport au temps reel)
+[3] WHISPER TRANSCRIPTION
+    Model loading : 0.90 s
+    Transcription : 0.39 s  (x11.9 real-time factor)
 
 ======================================================================
-TEXTE TRANSCRIT : 'This project turns your voice into text and pastes it wherever your cursor is.'
+TRANSCRIBED TEXT: 'This project turns your voice into text and pastes it wherever your cursor is.'
 ======================================================================
 ```
 
-Mesures relevées sur RTX 4060 Laptop, modèle `small`, précision float16.
+Measured on an RTX 4060 Laptop, `small` model, float16 precision.
 
 ---
 
 ## Interface
 
-Le visualiseur est une fenêtre compacte, maintenue au premier plan et conçue pour
-ne jamais voler le focus — vous continuez à taper pendant qu'elle est ouverte.
-Elle donne un retour immédiat sur ce que le système entend et comprend.
+The visualizer is a compact window, kept on top and designed never to steal focus —
+you keep typing while it is open. It gives immediate feedback on what the system
+hears and understands.
 
-**Dictée en cours** — le micro est actif (bouton bleu), la forme d'onde se colore
-selon la décision du VAD, et le texte transcrit s'affiche sous l'onde.
+**Dictation in progress** — the mic is live (blue button), the waveform is coloured by
+the VAD decision, and the transcribed text appears beneath the wave.
 
-![Dictée en cours](docs/images/01-dictee-en-cours.png)
+![Dictation in progress](docs/images/01-dictee-en-cours.png)
 
-**Micro en pause (F8)** — le bouton passe à l'orange. Ce qui restait en tampon a
-été transcrit avant la mise en pause.
+**Mic paused (F8)** — the button turns orange. Whatever was still buffered was
+transcribed before pausing.
 
-![Micro en pause](docs/images/02-micro-en-pause.png)
+![Mic paused](docs/images/02-micro-en-pause.png)
 
-**Transcription en cours** — un indicateur signale le passage de Whisper, pour
-distinguer un traitement en cours d'un système inactif.
+**Transcription running** — an indicator signals the Whisper pass, so a busy system is
+distinguishable from an idle one.
 
-![Transcription en cours](docs/images/03-transcription-en-cours.png)
+![Transcription running](docs/images/03-transcription-en-cours.png)
 
-**Mode bypass VAD** — second bouton de la barre. La détection de voix est
-court-circuitée et tout l'audio est enregistré jusqu'au prochain F8 : utile dans
-un environnement bruyant où le VAD découpe mal. Le réglage est persisté dans
-`parametre.json`.
+**VAD bypass mode** — second button on the bar. Voice detection is short-circuited and
+all audio is recorded until the next F8: useful in a noisy environment where the VAD
+segments badly. The setting is persisted in `parametre.json`.
 
-![Bypass VAD actif](docs/images/04-bypass-vad.png)
+![VAD bypass active](docs/images/04-bypass-vad.png)
 
-<sub>Captures de l'interface réelle (HTML/CSS/JS du projet) branchée sur le
-serveur SSE de l'application. La forme d'onde est alimentée par un fichier audio
-de test plutôt que par un micro, afin d'obtenir des captures reproductibles.</sub>
+<sub>Screenshots of the real interface (the project's own HTML/CSS/JS) wired to the
+application's SSE server. The waveform is fed from a test audio file rather than a
+microphone, to make the captures reproducible.</sub>
 
 ---
 
@@ -319,62 +309,57 @@ pytest
 321 passed in 12.93s
 ```
 
-La suite couvre le VAD, la détection de fin de phrase, le préprocessing, la
-machine à états F8/F9, le bus d'événements, la gestion d'erreurs et la
-configuration.
+The suite covers the VAD, end-of-phrase detection, preprocessing, the F8/F9 state
+machine, the event bus, error handling and configuration.
 
-`tests/test_end_to_end.py` exerce le pipeline complet sans micro : la parole est
-synthétisée par ffmpeg puis poussée dans les vrais composants. Ces tests se
-désactivent seuls si ffmpeg est absent. L'inférence Whisper est marquée `slow` :
+`tests/test_end_to_end.py` exercises the full pipeline without a microphone: speech is
+synthesised by ffmpeg then pushed through the real components. These tests skip
+themselves if ffmpeg is absent. Whisper inference is marked `slow`:
 
 ```bash
-pytest -m "not slow"    # boucle de retour rapide
+pytest -m "not slow"    # fast feedback loop
 ```
 
 ---
 
-## Choix techniques notables
+## Notable technical decisions
 
-**Seuils de fin de phrase étagés.** Un seuil unique force un compromis entre
-couper trop tôt et faire attendre. En pondérant le silence requis par les indices
-prosodiques disponibles, une phrase clairement terminée est transcrite en 1 s
-tandis qu'une hésitation bénéficie de 2,5 s. Ces trois seuils doivent rester
-strictement ordonnés — s'ils s'égalisent, la première condition absorbe les
-autres et l'analyse prosodique devient du code mort. Un test le vérifie.
+**Staged end-of-phrase thresholds.** A single threshold forces a trade-off between
+cutting too early and making the user wait. By weighting the required silence against
+the available prosodic cues, a clearly finished sentence is transcribed in 1 s while a
+hesitation gets 2.5 s. These three thresholds must stay strictly ordered — if they
+become equal, the first condition absorbs the others and the prosodic analysis becomes
+dead code. A test enforces this.
 
-**Filtre passe-haut vectorisé.** Le filtre IIR du préprocessing s'écrit
-`b = [α, -α]`, `a = [1, -α]` et se délègue à `scipy.signal.lfilter`, dont la
-boucle est en C : 445 ms → 10 ms sur un tampon de 30 s, à sortie numériquement
-identique (écart max 1,2e-7, soit l'epsilon du float32). Un test de
-non-régression compare la sortie à la récurrence Python d'origine.
+**Vectorised high-pass filter.** The preprocessing IIR filter is expressible as
+`b = [α, -α]`, `a = [1, -α]` and delegated to `scipy.signal.lfilter`, whose loop is in
+C: 445 ms → 10 ms on a 30 s buffer, with numerically identical output (max deviation
+1.2e-7, i.e. float32 epsilon). A regression test compares the output against the
+original Python recurrence.
 
-**Filtre anti-hallucinations en deux familles.** Whisper produit des artefacts
-caractéristiques sur du silence. Les chercher tous en sous-chaîne censurait des
-phrases légitimes — « j'aime la musique » disparaissait car « musique » figurait
-dans la liste. Les motifs courts ne filtrent donc que s'ils constituent le texte
-entier ; seules les formules longues et sans ambiguïté (« merci d'avoir
-regardé ») sont cherchées en sous-chaîne.
+**Anti-hallucination filter in two families.** Whisper produces characteristic
+artefacts on silence. Matching them all as substrings censored legitimate sentences —
+"I love music" disappeared because "music" was in the list. Short patterns therefore
+only match when they constitute the entire text; only long, unambiguous formulas
+("thanks for watching") are searched as substrings.
 
-**Configuration validée au démarrage.** Faire échouer le lancement sur une valeur
-hors bornes coûte moins cher que diagnostiquer un VAD qui ne déclenche jamais à
-cause d'un seuil aberrant.
+**Configuration validated at startup.** Failing the launch on an out-of-range value
+costs less than diagnosing a VAD that never triggers because of an absurd threshold.
 
 ---
 
-## Limites connues
+## Known limitations
 
-- **X11 uniquement pour le collage.** Le collage repose sur `xdotool`. Sous
-  Wayland, la transcription fonctionne mais l'injection dans la fenêtre active
-  est peu fiable.
-- **Le premier lancement télécharge le modèle** (~460 Mo à ~3 Go) : prévoir le
-  délai.
-- **Le module `services/`** (intégration AutoGen pour reformuler le texte
-  transcrit) est un squelette non activé.
-- **Le mode aperçu temps réel** est désactivé par défaut : il fait tourner une
-  seconde passe Whisper en continu, coûteuse pour un gain limité.
+- **X11 only for pasting.** Pasting relies on `xdotool`. Under Wayland, transcription
+  works but injection into the active window is unreliable.
+- **First launch downloads the model** (~460 MB to ~3 GB): budget for the delay.
+- **The `services/` module** (AutoGen integration to reformulate transcribed text) is
+  an inactive skeleton.
+- **Real-time preview mode** is off by default: it runs a second continuous Whisper
+  pass, expensive for limited benefit.
 
 ---
 
 ## Licence
 
-Projet personnel, non publié sous licence explicite à ce jour.
+MIT — see [LICENSE](LICENSE).
